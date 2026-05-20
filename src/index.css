@@ -1,0 +1,133 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 font-sans antialiased;
+}
+
+.docx-editor {
+  font-family: Arial, "Times New Roman", serif;
+  font-size: 11pt;
+  line-height: inherit;
+  color: #000;
+  text-align: left;
+  outline: none;
+}
+.docx-editor p {
+  margin-top: 0;
+  margin-bottom: 8pt;
+  min-height: 1em;
+}
+/* Font tag hacks for execCommand compatibility */
+.docx-editor font[face="Arial"] { font-family: Arial, sans-serif !important; }
+.docx-editor font[face="Times New Roman"] { font-family: "Times New Roman", serif !important; }
+.docx-editor font[face="Courier New"] { font-family: "Courier New", monospace !important; }
+.docx-editor font[face="Georgia"] { font-family: Georgia, serif !important; }
+.docx-editor font[face="Verdana"] { font-family: Verdana, sans-serif !important; }
+
+.docx-editor font[size="1"] { font-size: 10pt !important; }
+.docx-editor font[size="2"] { font-size: 11pt !important; }
+.docx-editor font[size="3"] { font-size: 12pt !important; }
+.docx-editor font[size="4"] { font-size: 14pt !important; }
+.docx-editor font[size="5"] { font-size: 18pt !important; }
+.docx-editor font[size="6"] { font-size: 24pt !important; }
+.docx-editor font[size="7"] { font-size: 36pt !important; }
+
+.docx-editor h1, .docx-editor h2, .docx-editor h3, .docx-editor h4, .docx-editor h5, .docx-editor h6 {
+  color: inherit;
+}
+.docx-editor h1 {
+  font-size: 24pt;
+  font-weight: bold;
+  margin: 12pt 0;
+  line-height: 1.2;
+}
+.docx-editor h2 {
+  font-size: 18pt;
+  font-weight: bold;
+  margin: 10pt 0;
+  line-height: 1.2;
+}
+.docx-editor h3 {
+  font-size: 14pt;
+  font-weight: bold;
+  margin: 8pt 0;
+  line-height: 1.2;
+}
+.docx-editor ul, .jodit-wysiwyg ul {
+  list-style-type: disc !important;
+  list-style-position: outside !important;
+  margin: 0 0 8pt 24pt !important;
+  padding-left: 16px !important;
+}
+.docx-editor ol, .jodit-wysiwyg ol {
+  list-style-type: decimal !important;
+  list-style-position: outside !important;
+  margin: 0 0 8pt 24pt !important;
+  padding-left: 16px !important;
+}
+.docx-editor li, .jodit-wysiwyg li {
+  margin-bottom: 4pt;
+  display: list-item !important;
+}
+.docx-editor a {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.docx-editor b, .docx-editor strong {
+  font-weight: bold;
+}
+.docx-editor i, .docx-editor em {
+  font-style: italic;
+}
+.docx-editor u {
+  text-decoration: underline;
+}
+.docx-editor s, .docx-editor strike {
+  text-decoration: line-through;
+}
+.docx-editor blockquote {
+  margin: 0 0 8pt 36pt;
+  padding: 0;
+  border-left: 3px solid #ccc;
+  padding-left: 12pt;
+  font-style: italic;
+}
+.docx-editor blockquote blockquote {
+  margin-left: 36pt;
+}
+.docx-editor table {
+  max-width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 8pt;
+}
+.docx-editor td, .docx-editor th {
+  border: 1px solid #ccc;
+  padding: 4px 8px;
+}
+.docx-editor img, .docx-editor video {
+  max-width: 100%;
+  height: auto;
+}
+.docx-editor mark {
+  background-color: yellow;
+  color: inherit;
+}
+.docx-editor mark.docx-comment {
+  background-color: #ffd4d4;
+  cursor: pointer;
+  color: inherit;
+}
+.docx-editor mark.docx-comment:hover {
+  background-color: #ffbaba;
+}
+.docx-editor mark.docx-comment.active {
+  background-color: #ffaa00;
+}
+

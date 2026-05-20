@@ -1,0 +1,12 @@
+{
+  "name": "AI Assist",
+  "description": "Asistente de inteligencia artificial con capacidades de investigación, ofimática (Word y Excel) y gestión de documentos en el navegador.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "document-editing",
+    "spreadsheet-editing",
+    "ai-agent",
+    "web-research",
+    "workspace-management"
+  ]
+}
