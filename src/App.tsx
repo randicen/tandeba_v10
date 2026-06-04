@@ -6,7 +6,7 @@ import {
   Search, Globe, UploadCloud, DownloadCloud, Terminal, FolderSearch, Eye, Code, Folder,
   Maximize, Minimize, Minus, X, ChevronLeft, ChevronRight, FileSpreadsheet, Trash2, Edit2, Undo, Redo, Paperclip,
   Bold, Italic, Underline, Strikethrough, Highlighter, Palette, MessageSquarePlus, AlignLeft, AlignCenter, AlignRight,
-  Indent, Outdent, Scissors, MoreHorizontal, ThumbsUp, Check, MessageSquare, CornerUpLeft, Link, List, ListOrdered, Heading1, Heading2, Heading3, PanelRightClose
+  Indent, Outdent, Scissors, MoreHorizontal, ThumbsUp, Check, MessageSquare, CornerUpLeft, Link, List, ListOrdered, Heading1, Heading2, Heading3, PanelRightClose, Wrench
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -16,6 +16,8 @@ import JoditEditor from 'jodit-react';
 import { Workbook as FortuneSheetWorkbook } from "@fortune-sheet/react";
 import "@fortune-sheet/react/dist/index.css";
 import LuckyExcel from "luckyexcel";
+import WelcomeScreen from './components/WelcomeScreen';
+import CustomizePage from './components/CustomizePage';
 
 // API Client
 const api = axios.create({ baseURL: '/api' });
@@ -267,6 +269,7 @@ export default function App() {
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [navMode, setNavMode] = useState<'chats' | 'spaces'>('chats');
   const [showNewMenu, setShowNewMenu] = useState(false);
+  const [activeView, setActiveView] = useState<'home' | 'computer' | 'vaults' | 'tools' | 'customize'>('home');
 
   useEffect(() => {
     loadSpaces();
@@ -409,7 +412,7 @@ export default function App() {
         )}>
         <div className="p-4">
           <div className="flex items-center justify-between mb-4 relative">
-            <h1 className="text-base font-bold tracking-tight text-gray-800">AI Assist</h1>
+            <h1 className="text-base font-bold tracking-tight text-gray-800">Worgena</h1>
           </div>
 
           <div className="relative mb-5">
@@ -429,40 +432,51 @@ export default function App() {
           </div>
           
           <nav className="space-y-1 mb-6">
-            <button onClick={() => { setNavMode('chats'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(null); }} className={cn(
+            <button onClick={() => { setNavMode('chats'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(null); setActiveView('home'); }} className={cn(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              navMode === 'chats' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              navMode === 'chats' && activeView === 'home' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
             )}>
-              <MessageSquarePlus className="w-4 h-4 shrink-0" /> Chats
+              <Bot className="w-4 h-4 shrink-0" /> Chats
             </button>
-            <button onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); }} className={cn(
+            <button onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveView('home'); }} className={cn(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              navMode === 'spaces' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              navMode === 'spaces' && activeView === 'home' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
             )}>
               <Folder className="w-4 h-4 shrink-0" /> Espacios
             </button>
+            <button onClick={() => setActiveView('computer')} className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+              activeView === 'computer' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+            )}>
+              <Terminal className="w-4 h-4 shrink-0" /> Computer
+            </button>
+            <button onClick={() => setActiveView('vaults')} className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+              activeView === 'vaults' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+            )}>
+              <Folder className="w-4 h-4 shrink-0 text-amber-500" /> Bóvedas
+            </button>
+            <button onClick={() => setActiveView('tools')} className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+              activeView === 'tools' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+            )}>
+              <Wrench className="w-4 h-4 shrink-0" /> Herramientas
+            </button>
+            <button onClick={() => setActiveView('customize')} className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+              activeView === 'customize' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+            )}>
+              <Settings className="w-4 h-4 shrink-0" /> Personalizar
+            </button>
           </nav>
 
-          <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Bóvedas</div>
-          <nav className="space-y-0.5 mb-4">
+          <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Bóvedas recientes</div>
+          <nav className="space-y-0.5 mb-6">
             <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-600">
               <Folder className="w-4 h-4 shrink-0 text-amber-500" /> Jurisprudencia
             </button>
             <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-600">
               <Folder className="w-4 h-4 shrink-0 text-amber-500" /> Contratos
-            </button>
-          </nav>
-
-          <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Skills</div>
-          <nav className="space-y-0.5 mb-6">
-            <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-600">
-              <Activity className="w-4 h-4 shrink-0" /> Análisis de contratos
-            </button>
-            <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-600">
-              <Activity className="w-4 h-4 shrink-0" /> Due diligence
-            </button>
-            <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-500">
-              <Plus className="w-3 h-3 shrink-0" /> Nueva skill
             </button>
           </nav>
           
@@ -509,6 +523,30 @@ export default function App() {
           </header>
           <ChatArea session={activeSessionDetail} onUpdate={handleUpdate} onToggleFiles={() => setIsWorkspaceSidebarOpen(true)} />
         </main>
+      ) : activeView === 'customize' ? (
+        <CustomizePage onBack={() => setActiveView('home')} />
+      ) : activeView === 'computer' ? (
+        <main className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50 min-w-0 w-full">
+          <Terminal className="w-16 h-16 text-gray-200 mb-4" />
+          <h2 className="text-2xl font-bold text-gray-400 mb-2">Computer</h2>
+          <p className="text-gray-500 text-sm max-w-sm mb-6">Mini-aplicaciones HTML/JS y navegador interactivo.</p>
+          <p className="text-xs text-gray-400">Activa el switcher Computer en la barra de input para usar el navegador y las mini-apps.</p>
+        </main>
+      ) : activeView === 'vaults' ? (
+        <main className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50 min-w-0 w-full">
+          <Folder className="w-16 h-16 text-gray-200 mb-4" />
+          <h2 className="text-2xl font-bold text-gray-400 mb-2">Bóvedas</h2>
+          <p className="text-gray-500 text-sm max-w-sm mb-6">Colecciones de documentos y artefactos organizadas por carpeta.</p>
+          <button onClick={() => createSpace()} className="px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 flex items-center gap-2">
+            <Plus className="w-4 h-4" /> Crear nueva bóveda
+          </button>
+        </main>
+      ) : activeView === 'tools' ? (
+        <main className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50 min-w-0 w-full">
+          <Wrench className="w-16 h-16 text-gray-200 mb-4" />
+          <h2 className="text-2xl font-bold text-gray-400 mb-2">Herramientas</h2>
+          <p className="text-gray-500 text-sm max-w-sm">Acceso rápido a las herramientas internas: tabular review, editor DOCX, dashboards, etc.</p>
+        </main>
       ) : navMode === 'spaces' ? (
         <SpacesView 
           spaces={spaces}
@@ -523,14 +561,24 @@ export default function App() {
           onBackToSpaces={() => setActiveSpaceId(null)}
         />
       ) : (
-        <main className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50 min-w-0 w-full">
-          <Bot className="w-16 h-16 text-gray-200 mb-4" />
-          <h2 className="text-2xl font-bold text-gray-400 mb-2">Chats</h2>
-          <p className="text-gray-500 text-sm max-w-sm mb-6">Tus conversaciones sueltas aparecerán aquí.</p>
-          <button onClick={() => createSession(null)} className="px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 flex items-center gap-2">
-            <Plus className="w-4 h-4" /> Nuevo chat
-          </button>
-        </main>
+        <WelcomeScreen
+          userName="doctor Juan"
+          onSubmit={async (message, m) => { await createSession(null); setTimeout(() => {
+            const sid = sessions[sessions.length - 1]?.id || activeSessionId;
+            if (sid) {
+              api.post(`/sessions/${sid}/message`, { content: message }).catch(() => {});
+            }
+          }, 200); }}
+          onAttachFile={async (file) => {
+            const fd = new FormData();
+            fd.append('file', file);
+            try { await axios.post('/api/sessions/0/workspace/files/upload', fd); } catch {}
+          }}
+          onOpenCustomize={() => setActiveView('customize')}
+          onOpenMonitors={(tab) => {}}
+          onOpenScheduled={() => { alert('Tareas programadas: función en construcción. Configúralas desde el panel de Tareas recurrentes dentro de cada espacio.'); }}
+          onOpenGuides={() => { alert('Guías: próximamente.'); }}
+        />
       )}
 
       {activeSessionDetail && isWorkspaceSidebarOpen && (
