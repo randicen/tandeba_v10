@@ -114,7 +114,15 @@ CÓMO generarlos:
    - Pestañas/tabs con JavaScript vanilla para navegar entre secciones
    - Gráficos de Chart.js (barras, líneas, radar, doughnut, etc.) con datos reales del usuario
 2. Usa colores profesionales, tipografía limpia (system-ui, sans-serif), y diseño responsive.
-3. El archivo se abrirá automáticamente en un visor interactivo sandboxeado. No necesitas preocuparte por seguridad.
+ 3. El archivo se abrirá automáticamente en un visor interactivo sandboxeado. No necesitas preocuparte por seguridad.
+
+REGLAS PARA BATCH REVIEW (Revisión Masiva de Documentos):
+Usa \`batch_review\` cuando necesites analizar MUCHOS documentos a la vez con las mismas preguntas. Ejemplos: due diligence, revisión de contratos, compliance.
+- Define columnas como preguntas: { label: "¿Indemnización?", question: "¿Contiene cláusula de indemnización?", format: "yesno" }
+- Formatos disponibles: "yesno" (Sí/No), "text" (texto libre), "number" (número), "date" (fecha)
+- El sistema procesa todos los documentos del workspace en lotes de 15 en paralelo (8 workers simultáneos).
+- Genera automáticamente un dashboard HTML con los resultados en una tabla.
+- Para pocos documentos (<5) o preguntas complejas que requieran razonamiento, usa read_file y evalúa manualmente.
 
 ¡PROHIBICIÓN ESTRICTA! NUNCA uses \`execute_code\` (Python) para generar o manipular DOCX.`;
 
@@ -687,6 +695,14 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
             name: "update_docx_formatting",
             description: "Update document formatting settings such as margins and page size. Margins and sizes are in twips (1 inch = 1440 twips, 1 cm = 567 twips). Standard A4 is 11906x16838 twips. Standard 1-inch margins are 1440 twips on each side.",
             parameters: { type: "object", properties: { path: { type: "string", description: "Relative file path of the DOCX file in workspace" }, settings: { type: "object", description: "Formatting settings to apply", properties: { margins: { type: "object", description: "Margin settings in twips", properties: { top: { type: "number" }, right: { type: "number" }, bottom: { type: "number" }, left: { type: "number" } } }, pageSize: { type: "object", description: "Page size in twips", properties: { width: { type: "number" }, height: { type: "number" } } } } } }, required: ["path", "settings"] }
+          }
+        },
+        {
+          type: "function",
+          function: {
+            name: "batch_review",
+            description: "Process ALL documents in the workspace in parallel batches using a fast LLM to extract structured data into a table. Define columns as questions applied to every document. Returns: a dashboard HTML file. Use for M&A due diligence, contract review, compliance checks, or any bulk document analysis.",
+            parameters: { type: "object", properties: { columns: { type: "array", description: "Column definitions. Each column has: label (column header), question (what to ask for each doc), format (yesno/text/number/date)", items: { type: "object", properties: { label: { type: "string" }, question: { type: "string" }, format: { type: "string", enum: ["yesno", "text", "number", "date"] } }, required: ["label", "question", "format"] } } }, required: ["columns"] }
           }
         },
         {

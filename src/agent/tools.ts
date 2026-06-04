@@ -6,6 +6,7 @@ import PDFParser from "pdf2json";
 import mammoth from "mammoth";
 import * as xlsx from "xlsx";
 import { DocxEngine } from '../lib/docx/DocxEngine.js';
+import { batchReviewDocuments, generateDashboardHtml } from './batch-processor.js';
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 const r2AccountId = process.env.R2_ACCOUNT_ID;
@@ -449,6 +450,9 @@ export async function executeTool(name: string, args: any, sessionId: string): P
   }
   if (name === "update_docx_formatting") {
     return await updateDocxFormatting(args.path, args.settings, sessionId);
+  }
+  if (name === "batch_review") {
+    return await executeBatchReview(args.columns, sessionId);
   }
   throw new Error(`Unknown tool: ${name}`);
 }
@@ -999,6 +1003,35 @@ export async function aiDocumentEditor(filePath: string, instruction: string, se
     return "Successfully edited Document using AI HTML modification. The document layout is preserved precisely, and both the preview (.doc.html) and the DOCX file have been updated.";
   } catch(e: any) {
     return `Error editing Document: ${e.message}`;
+  }
+}
+
+async function executeBatchReview(columns: Array<{label: string; question: string; format: string}>, sessionId: string) {
+  try {
+    const { openai } = await import("./agent.js");
+    const result = await batchReviewDocuments(sessionId, columns as any, openai);
+
+    // Generate and save dashboard
+    const dashboardHtml = generateDashboardHtml(result);
+    const dir = path.join(process.cwd(), "workspace", sessionId);
+    await fs.mkdir(dir, { recursive: true });
+    const filename = `review_${Date.now()}.html`;
+    await fs.writeFile(path.join(dir, filename), dashboardHtml, "utf-8");
+    await syncToR2(filename, Buffer.from(dashboardHtml, "utf-8"), sessionId);
+
+    return JSON.stringify({
+      dashboard: filename,
+      totalDocs: result.totalDocs,
+      totalBatches: result.totalBatches,
+      durationMs: result.durationMs,
+      columns: result.columns.length,
+      preview: result.rows.slice(0, 5).map(r => ({
+        filename: r.filename,
+        ...Object.fromEntries(result.columns.map(c => [c.label, r[c.label] || "N/A"]))
+      }))
+    });
+  } catch(e: any) {
+    return `Error in batch review: ${e.message}`;
   }
 }
 

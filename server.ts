@@ -205,7 +205,22 @@ async function startServer() {
 
   app.use(express.json());
   
-  const upload = multer({ storage: multer.memoryStorage() });
+  const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB per file
+  const MAX_WORKSPACE_SIZE = 500 * 1024 * 1024; // 500MB total
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_SIZE } });
+
+  async function getWorkspaceSize(dir: string): Promise<number> {
+    try {
+      const fs = await import("fs/promises");
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      let total = 0;
+      for (const e of entries) {
+        if (e.isDirectory()) { total += await getWorkspaceSize(path.join(dir, e.name)); }
+        else { const s = await fs.stat(path.join(dir, e.name)); total += s.size; }
+      }
+      return total;
+    } catch { return 0; }
+  }
 
   app.post("/api/sessions/:id/workspace/files/upload", upload.single("file"), async (req, res) => {
     try {
@@ -214,6 +229,15 @@ async function startServer() {
       const fs = await import("fs/promises");
       const base = path.join(process.cwd(), 'workspace', req.params.id);
       await fs.mkdir(base, { recursive: true });
+
+      // Enforce workspace size limit
+      const currentSize = await getWorkspaceSize(base);
+      if (currentSize + req.file.size > MAX_WORKSPACE_SIZE) {
+        return res.status(413).json({ error: `Has alcanzado el límite de 500MB del espacio de trabajo. Elimina algunos archivos para liberar espacio.` });
+      }
+      if (req.file.size > MAX_FILE_SIZE) {
+        return res.status(413).json({ error: "Cada archivo debe pesar máximo 20MB." });
+      }
       
       let filename = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
       let fileBuffer = req.file.buffer;
@@ -361,6 +385,10 @@ async function startServer() {
       const fs = await import("fs/promises");
       const dir = path.join(process.cwd(), 'workspace', 'spaces', req.params.id);
       await fs.mkdir(dir, { recursive: true });
+      const currentSize = await getWorkspaceSize(dir);
+      if (currentSize + (req.file?.size || 0) > MAX_WORKSPACE_SIZE) {
+        return res.status(413).json({ error: "Has alcanzado el límite de 500MB del espacio de trabajo." });
+      }
       const filename = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
       await fs.writeFile(path.join(dir, filename), req.file.buffer);
       res.json({ status: "ok", name: filename });
