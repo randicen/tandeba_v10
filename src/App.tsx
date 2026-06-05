@@ -18,6 +18,7 @@ import "@fortune-sheet/react/dist/index.css";
 import LuckyExcel from "luckyexcel";
 import WelcomeScreen from './components/WelcomeScreen';
 import CustomizePage from './components/CustomizePage';
+import VaultsView from './components/VaultsView';
 
 // API Client
 const api = axios.create({ baseURL: '/api' });
@@ -444,12 +445,6 @@ export default function App() {
             )}>
               <Folder className="w-4 h-4 shrink-0" /> Espacios
             </button>
-            <button onClick={() => setActiveView('computer')} className={cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              activeView === 'computer' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
-            )}>
-              <Terminal className="w-4 h-4 shrink-0" /> Computer
-            </button>
             <button onClick={() => setActiveView('vaults')} className={cn(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
               activeView === 'vaults' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
@@ -530,17 +525,10 @@ export default function App() {
           <Terminal className="w-16 h-16 text-gray-200 mb-4" />
           <h2 className="text-2xl font-bold text-gray-400 mb-2">Computer</h2>
           <p className="text-gray-500 text-sm max-w-sm mb-6">Mini-aplicaciones HTML/JS y navegador interactivo.</p>
-          <p className="text-xs text-gray-400">Activa el switcher Computer en la barra de input para usar el navegador y las mini-apps.</p>
+          <p className="text-xs text-gray-400">Activa Computer desde el toggle en la barra de input.</p>
         </main>
       ) : activeView === 'vaults' ? (
-        <main className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50 min-w-0 w-full">
-          <Folder className="w-16 h-16 text-gray-200 mb-4" />
-          <h2 className="text-2xl font-bold text-gray-400 mb-2">Bóvedas</h2>
-          <p className="text-gray-500 text-sm max-w-sm mb-6">Colecciones de documentos y artefactos organizadas por carpeta.</p>
-          <button onClick={() => createSpace()} className="px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 flex items-center gap-2">
-            <Plus className="w-4 h-4" /> Crear nueva bóveda
-          </button>
-        </main>
+        <VaultsView />
       ) : activeView === 'tools' ? (
         <main className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50 min-w-0 w-full">
           <Wrench className="w-16 h-16 text-gray-200 mb-4" />

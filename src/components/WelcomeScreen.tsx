@@ -1,8 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { 
-  Plus, Bot, Mic, Send, ChevronDown, Sparkles, HelpCircle, Calendar, 
+  Plus, Bot, Mic, Send, ChevronDown, ChevronRight, Sparkles, HelpCircle, Calendar, 
   Image as ImageIcon, Folder, Camera, FileUp, Zap, Briefcase,
-  Monitor, Newspaper, Settings, X
+  Monitor, Newspaper, Settings, X, Terminal, Plug
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -30,6 +30,9 @@ export default function WelcomeScreen({
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showPersonalizeMenu, setShowPersonalizeMenu] = useState(false);
   const [showModeMenu, setShowModeMenu] = useState(false);
+  const [showPluginsSubmenu, setShowPluginsSubmenu] = useState(false);
+  const [showProyectosSubmenu, setShowProyectosSubmenu] = useState(false);
+  const [computerEnabled, setComputerEnabled] = useState(false);
   const [activeMonitor, setActiveMonitor] = useState<'internal' | 'external' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -53,9 +56,14 @@ export default function WelcomeScreen({
     }
   };
 
+  const mockPlugins = [
+    { id: 'p1', name: 'Abogado Litigante', active: true },
+    { id: 'p2', name: 'Contador Público', active: false },
+    { id: 'p3', name: 'Consultor Empresarial', active: false },
+  ];
+
   return (
     <main className="flex-1 flex flex-col min-w-0 bg-white relative z-10 w-full">
-      {/* Top tabs: Monitors, Guides, Scheduled */}
       <div className="flex items-center justify-between px-6 sm:px-10 pt-6 pb-2">
         <div className="flex items-center gap-6">
           <button
@@ -93,7 +101,6 @@ export default function WelcomeScreen({
         </div>
       </div>
 
-      {/* Centered greeting + input */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 sm:px-10 pb-12">
         <h1 className="text-3xl sm:text-4xl font-semibold text-gray-900 mb-8">
           {greeting}, {userName}
@@ -111,6 +118,7 @@ export default function WelcomeScreen({
             />
             <div className="flex items-center justify-between gap-2 mt-2">
               <div className="flex items-center gap-1 relative">
+                {/* + Attach button */}
                 <button
                   onClick={() => { setShowAttachMenu(!showAttachMenu); setShowPersonalizeMenu(false); setShowModeMenu(false); }}
                   className="w-9 h-9 rounded-xl text-gray-500 hover:text-gray-700 hover:bg-gray-100 flex items-center justify-center transition-colors"
@@ -142,14 +150,34 @@ export default function WelcomeScreen({
                       <Camera className="w-4 h-4 text-gray-500" />
                       <span>Tomar captura de pantalla</span>
                     </button>
+                    <div className="border-t border-gray-100 my-1" />
+                    {/* Proyectos submenu */}
                     <button
-                      onClick={() => { setShowAttachMenu(false); }}
+                      onClick={() => { setShowProyectosSubmenu(!showProyectosSubmenu); }}
                       className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 flex items-center gap-3"
                     >
-                      <FileUp className="w-4 h-4 text-gray-500" />
-                      <span>Agregar al proyecto</span>
-                      <ChevronDown className="w-3.5 h-3.5 text-gray-400 ml-auto" />
+                      <Briefcase className="w-4 h-4 text-gray-500" />
+                      <span>Proyectos</span>
+                      <ChevronRight className={cn("w-3.5 h-3.5 text-gray-400 ml-auto transition-transform", showProyectosSubmenu && "rotate-90")} />
                     </button>
+                    {showProyectosSubmenu && (
+                      <div className="bg-gray-50/50 px-2 py-1 animate-fade-in">
+                        <button
+                          onClick={() => { setShowAttachMenu(false); setShowProyectosSubmenu(false); }}
+                          className="w-full text-left pl-10 pr-4 py-2 text-sm hover:bg-white rounded-lg flex items-center gap-3"
+                        >
+                          <FileUp className="w-4 h-4 text-gray-500" />
+                          <span>Agregar a proyecto</span>
+                        </button>
+                        <button
+                          onClick={() => { setShowAttachMenu(false); setShowProyectosSubmenu(false); }}
+                          className="w-full text-left pl-10 pr-4 py-2 text-sm hover:bg-white rounded-lg flex items-center gap-3"
+                        >
+                          <Folder className="w-4 h-4 text-gray-500" />
+                          <span>Contextualizar en proyecto</span>
+                        </button>
+                      </div>
+                    )}
                     <div className="border-t border-gray-100 my-1" />
                     <button
                       onClick={() => { setShowAttachMenu(false); onOpenCustomize(); }}
@@ -173,6 +201,7 @@ export default function WelcomeScreen({
                   }}
                 />
 
+                {/* Personalización button */}
                 <button
                   onClick={() => { setShowPersonalizeMenu(!showPersonalizeMenu); setShowAttachMenu(false); setShowModeMenu(false); }}
                   className="px-3 h-9 rounded-xl text-gray-500 hover:text-gray-700 hover:bg-gray-100 flex items-center gap-1.5 text-sm transition-colors"
@@ -182,7 +211,7 @@ export default function WelcomeScreen({
                   <ChevronDown className="w-3.5 h-3.5" />
                 </button>
                 {showPersonalizeMenu && (
-                  <div className="absolute top-full left-32 mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-lg z-30 py-2 animate-fade-in">
+                  <div className="absolute top-full left-32 mt-2 w-64 bg-white border border-gray-200 rounded-xl shadow-lg z-30 py-2 animate-fade-in">
                     <button
                       onClick={() => { setShowPersonalizeMenu(false); onOpenCustomize(); }}
                       className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 flex items-center gap-3"
@@ -199,18 +228,60 @@ export default function WelcomeScreen({
                       <span>Conectores</span>
                       <ChevronDown className="w-3.5 h-3.5 text-gray-400 ml-auto" />
                     </button>
+                    {/* Plugins with submenu */}
                     <button
-                      onClick={() => { setShowPersonalizeMenu(false); onOpenCustomize(); }}
+                      onClick={() => { setShowPluginsSubmenu(!showPluginsSubmenu); }}
                       className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 flex items-center gap-3"
                     >
-                      <Zap className="w-4 h-4 text-gray-500" />
-                      <span>Agregar plugins</span>
+                      <Plug className="w-4 h-4 text-gray-500" />
+                      <span>Plugins</span>
+                      <ChevronRight className={cn("w-3.5 h-3.5 text-gray-400 ml-auto transition-transform", showPluginsSubmenu && "rotate-90")} />
                     </button>
+                    {showPluginsSubmenu && (
+                      <div className="bg-gray-50/50 px-2 py-1 animate-fade-in">
+                        {mockPlugins.map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => { setShowPluginsSubmenu(false); setShowPersonalizeMenu(false); onOpenCustomize(); }}
+                            className="w-full text-left pl-10 pr-4 py-2 text-sm hover:bg-white rounded-lg flex items-center justify-between"
+                          >
+                            <span className="text-gray-700">{p.name}</span>
+                            {p.active && (
+                              <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">Activo</span>
+                            )}
+                          </button>
+                        ))}
+                        <div className="border-t border-gray-200 my-1" />
+                        <button
+                          onClick={() => { setShowPluginsSubmenu(false); setShowPersonalizeMenu(false); onOpenCustomize(); }}
+                          className="w-full text-left pl-10 pr-4 py-2 text-sm hover:bg-white rounded-lg flex items-center gap-2 text-gray-500"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Agregar plugins</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
               <div className="flex items-center gap-1">
+                {/* Computer toggle */}
+                <button
+                  onClick={() => setComputerEnabled(!computerEnabled)}
+                  className={cn(
+                    "px-3 h-9 rounded-xl text-sm font-medium flex items-center gap-1.5 transition-colors",
+                    computerEnabled 
+                      ? "bg-gray-900 text-white hover:bg-gray-800" 
+                      : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                  )}
+                  title="Modo Computador"
+                >
+                  <Terminal className="w-4 h-4" />
+                  <span className="hidden sm:inline">Computer</span>
+                </button>
+
+                {/* Fast/Pro selector */}
                 <div className="relative">
                   <button
                     onClick={() => { setShowModeMenu(!showModeMenu); setShowAttachMenu(false); setShowPersonalizeMenu(false); }}
@@ -259,7 +330,6 @@ export default function WelcomeScreen({
         </div>
       </div>
 
-      {/* Active monitor preview */}
       {activeMonitor && (
         <div className="absolute inset-0 bg-white z-20 overflow-y-auto animate-fade-in">
           <div className="flex items-center justify-between px-6 sm:px-10 py-4 border-b border-gray-200">
