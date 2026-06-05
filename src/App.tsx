@@ -19,6 +19,7 @@ import LuckyExcel from "luckyexcel";
 import WelcomeScreen from './components/WelcomeScreen';
 import CustomizePage from './components/CustomizePage';
 import VaultsView from './components/VaultsView';
+import { SpacesMainView } from './components/SpacesMainView';
 
 // API Client
 const api = axios.create({ baseURL: '/api' });
@@ -69,193 +70,13 @@ const getToolDisplay = (name?: string, argsStr?: string) => {
 };
 
 function SpacesView({ spaces, sessions, activeSpaceId, onSelectSpace, onCreateSpace, onCreateSession, onSelectSession, onBackToSpaces }: any) {
-  const [search, setSearch] = useState('');
-  const selectedSpace = spaces.find((s: any) => s.id === activeSpaceId);
-  const spaceThreads = sessions.filter((s: any) => s.spaceId === activeSpaceId);
-  const [editingInstructions, setEditingInstructions] = useState<string | null>(null);
-  const [instructionsText, setInstructionsText] = useState('');
-  const [spaceInstructions, setSpaceInstructions] = useState<Record<string, string>>({});
-  const [spaceFiles, setSpaceFiles] = useState<any[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (selectedSpace) {
-      setInstructionsText(selectedSpace.instructions || spaceInstructions[selectedSpace.id] || '');
-      loadSpaceFiles(selectedSpace.id);
-    }
-  }, [activeSpaceId]);
-
-  const loadSpaceFiles = async (sid: string) => {
-    try {
-      const res = await axios.get(`/api/spaces/${sid}/files`);
-      setSpaceFiles(Array.isArray(res.data) ? res.data : []);
-    } catch { setSpaceFiles([]); }
-  };
-
-  const saveInstructions = async () => {
-    if (!selectedSpace) return;
-    try {
-      const res = await axios.put(`/api/spaces/${selectedSpace.id}/instructions`, { instructions: instructionsText });
-      const updated = res.data;
-      setSpaceInstructions((prev: any) => ({ ...prev, [selectedSpace.id]: updated?.instructions || instructionsText }));
-      setEditingInstructions(null);
-    } catch(e: any) { alert("Error: " + (e.response?.data?.error || e.message)); }
-  };
-
-  const uploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !selectedSpace) return;
-    const fd = new FormData(); fd.append('file', file);
-    try {
-      await axios.post(`/api/spaces/${selectedSpace.id}/files/upload`, fd);
-      loadSpaceFiles(selectedSpace.id);
-    } catch(e: any) { alert("Error: " + e.message); }
-    e.target.value = '';
-  };
-
-  const deleteFile = async (name: string) => {
-    if (!selectedSpace) return;
-    try { await axios.delete(`/api/spaces/${selectedSpace.id}/files/${name}`); loadSpaceFiles(selectedSpace.id); } catch {}
-  };
-
-  if (!activeSpaceId) {
-    const filtered = spaces.filter((s: any) => !search || s.name.toLowerCase().includes(search.toLowerCase()));
-    return (
-      <main className="flex-1 flex flex-col min-w-0 bg-white z-10 w-full">
-        <div className="p-6 md:p-10 max-w-4xl mx-auto w-full">
-          <div className="flex items-center justify-between mb-8">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Espacios</h1>
-              <p className="text-gray-500 text-sm mt-1">Gestiona tus proyectos y sus chats</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar espacios..." className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-gray-400 w-56" />
-              </div>
-              <button onClick={onCreateSpace} className="px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors flex items-center gap-2">
-                <Plus className="w-4 h-4" /> Nuevo espacio
-              </button>
-            </div>
-          </div>
-          {filtered.length === 0 ? (
-            <div className="text-center py-20 text-gray-400">
-              <Folder className="w-12 h-12 mx-auto mb-4 text-gray-200" />
-              <p className="text-lg font-medium">No hay espacios aún</p>
-              <p className="text-sm mt-1">Crea tu primer espacio para empezar</p>
-            </div>
-          ) : (
-            <div className="border border-gray-200 rounded-xl overflow-hidden">
-              <div className="grid grid-cols-12 gap-4 px-5 py-3 bg-gray-50 border-b border-gray-200 text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
-                <div className="col-span-5">Nombre</div>
-                <div className="col-span-3">Visibilidad</div>
-                <div className="col-span-4 text-right">Última modificación</div>
-              </div>
-              {filtered.map((s: any) => (
-                <button key={s.id} onClick={() => onSelectSpace(s.id)} className="w-full grid grid-cols-12 gap-4 px-5 py-4 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors text-left">
-                  <div className="col-span-5 flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center shrink-0"><Folder className="w-4 h-4 text-amber-600" /></div>
-                    <span className="text-sm font-medium text-gray-800 truncate">{s.name}</span>
-                  </div>
-                  <div className="col-span-3 flex items-center gap-1.5 text-sm text-gray-500"><span className="text-[10px]">🔒</span> Privado</div>
-                  <div className="col-span-4 text-right text-sm text-gray-400">hace {Math.round((Date.now() - s.updatedAt) / 60000)} min</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </main>
-    );
-  }
-
+  // Wrapper que delega a SpacesMainView (vista raíz + detalle con jerarquía)
   return (
-    <main className="flex-1 flex flex-col min-w-0 bg-white z-10 w-full">
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 flex flex-col min-w-0">
-          <div className="px-8 md:px-12 py-8 border-b border-gray-100">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center"><Folder className="w-5 h-5 text-amber-600" /></div>
-              <div>
-                <div className="flex items-center gap-3">
-                  <h1 className="text-xl font-bold text-gray-900">{selectedSpace?.name || 'Espacio'}</h1>
-                  <button className="px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-1.5">
-                    <FileSpreadsheet className="w-3.5 h-3.5" /> Tabular Review
-                  </button>
-                </div>
-                <p className="text-sm text-gray-500 mt-0.5">{selectedSpace?.instructions || 'Describe tu proyecto...'}</p>
-              </div>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto px-8 md:px-12 py-4">
-            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">Threads</h2>
-            {spaceThreads.length === 0 ? (
-              <div className="text-center py-20 text-gray-400"><p className="text-sm">Sin conversaciones aún</p></div>
-            ) : (
-              <div className="space-y-2">
-                {spaceThreads.map((t: any) => (
-                  <button key={t.id} onClick={() => onSelectSession(t.id)} className="w-full text-left p-4 rounded-xl border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-gray-800">{t.name || 'Chat'}</span>
-                      <span className="text-[10px] text-gray-400">{new Date(t.createdAt).toLocaleDateString()}</span>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <div className={cn("w-1.5 h-1.5 rounded-full", t.status === 'running' ? 'bg-blue-500 animate-pulse' : 'bg-green-500')}></div>
-                      <span className="text-[10px] uppercase text-gray-500">{t.status}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="px-8 md:px-12 pb-6">
-            <div className="relative border border-gray-200 rounded-2xl p-4 shadow-sm hover:border-gray-300 transition-colors">
-              <button onClick={() => onCreateSession(activeSpaceId)} className="w-full text-left text-gray-400 text-sm">Inicia una tarea en {selectedSpace?.name || 'el espacio'}...</button>
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                <button onClick={() => fileInputRef.current?.click()} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"><Plus className="w-4 h-4" /></button>
-              </div>
-              <input type="file" ref={fileInputRef} className="hidden" multiple onChange={uploadFile} />
-            </div>
-          </div>
-        </div>
-        <div className="w-[300px] border-l border-gray-200 bg-gray-50/50 shrink-0 hidden lg:flex flex-col">
-          <div className="p-4 border-b border-gray-200">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Instrucciones del espacio</h3>
-            {editingInstructions !== null ? (
-              <div className="space-y-2">
-                <textarea value={instructionsText} onChange={e => setInstructionsText(e.target.value)} className="w-full p-3 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:border-gray-400 h-32" placeholder="Define cómo debe comportarse el agente..." />
-                <div className="flex gap-2">
-                  <button onClick={saveInstructions} className="px-3 py-1.5 bg-gray-900 text-white text-xs rounded-lg hover:bg-gray-800">Guardar</button>
-                  <button onClick={() => setEditingInstructions(null)} className="px-3 py-1.5 bg-white border text-xs rounded-lg hover:bg-gray-50">Cancelar</button>
-                </div>
-              </div>
-            ) : (
-              <div>
-                <p className="text-sm text-gray-600 leading-relaxed">{instructionsText || 'Sin instrucciones definidas.'}</p>
-                <button onClick={() => setEditingInstructions(activeSpaceId)} className="text-xs text-blue-600 hover:text-blue-800 mt-2">Editar instrucciones</button>
-              </div>
-            )}
-           </div>
-          <div className="flex-1 overflow-y-auto p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Bóveda del espacio</h3>
-              <button onClick={() => fileInputRef.current?.click()} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"><Plus className="w-3.5 h-3.5" /></button>
-            </div>
-            {spaceFiles.length === 0 ? (
-              <p className="text-xs text-gray-400">Sin archivos compartidos</p>
-            ) : (
-              <div className="space-y-1">
-                {spaceFiles.map((f: any) => (
-                  <div key={f.name} className="flex items-center justify-between p-2 rounded-lg hover:bg-white group">
-                    <span className="text-xs text-gray-700 truncate">{f.name}</span>
-                    <button onClick={() => deleteFile(f.name)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 p-0.5"><Trash2 className="w-3 h-3" /></button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </main>
+    <SpacesMainView
+      activeSpaceId={activeSpaceId}
+      onSelectSpace={onSelectSpace}
+      onSelectThread={(sessionId: string) => onSelectSession(sessionId)}
+    />
   );
 }
 
@@ -439,7 +260,7 @@ export default function App() {
             )}>
               <Bot className="w-4 h-4 shrink-0" /> Chats
             </button>
-            <button onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveView('home'); }} className={cn(
+            <button onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(null); setActiveView('home'); }} className={cn(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
               navMode === 'spaces' && activeView === 'home' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
             )}>

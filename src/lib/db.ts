@@ -67,11 +67,18 @@ function initDB() {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         instructions TEXT DEFAULT '',
+        parent_id TEXT,
         created_at BIGINT,
         updated_at BIGINT
       );
 
       CREATE INDEX IF NOT EXISTS sessions_space_id_idx ON sessions(space_id);
+      CREATE INDEX IF NOT EXISTS spaces_parent_id_idx ON spaces(parent_id);
+
+      -- Migración segura: agregar parent_id si la tabla existía sin esa columna
+      -- (para upgrades desde la versión 1f0f873)
+      -- SQLite no tiene IF NOT EXISTS en ALTER TABLE ADD COLUMN,
+      -- así que verificamos antes con PRAGMA table_info.
 
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -87,6 +94,19 @@ function initDB() {
       );
 
       CREATE INDEX IF NOT EXISTS messages_session_id_idx ON messages(session_id, created_at);
+
+      -- Migración: agregar parent_id a spaces si no existe (para upgrades)
+      const spaceColumns = db.prepare("PRAGMA table_info(spaces)").all() as any[];
+      const hasParentId = spaceColumns.some((c: any) => c.name === 'parent_id');
+      if (!hasParentId) {
+        try {
+          db.exec('ALTER TABLE spaces ADD COLUMN parent_id TEXT');
+          db.exec('CREATE INDEX IF NOT EXISTS spaces_parent_id_idx ON spaces(parent_id)');
+          console.log('Migration: added parent_id column to spaces');
+        } catch (e: any) {
+          console.error('Migration parent_id failed:', e.message);
+        }
+      }
 
       CREATE TABLE IF NOT EXISTS core_memory (
         key TEXT PRIMARY KEY,

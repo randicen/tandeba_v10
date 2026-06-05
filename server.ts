@@ -332,12 +332,24 @@ async function startServer() {
   const { createSpace, getSpaces, renameSpace, deleteSpace } = await import("./src/agent/spaces.js");
 
   app.get("/api/spaces", async (req, res) => {
-    try { res.json(await getSpaces()); } catch(e: any) { res.status(500).json({ error: e.message }); }
+    try {
+      const { getAllSpacesFlat, getSpaces } = await import("./src/agent/spaces.js");
+      if (req.query.flat === 'true') {
+        res.json(await getAllSpacesFlat());
+      } else if (req.query.parentId !== undefined) {
+        const parentId = req.query.parentId === 'null' || req.query.parentId === '' ? null : String(req.query.parentId);
+        res.json(await getSpaces(parentId));
+      } else {
+        res.json(await getAllSpacesFlat());
+      }
+    } catch(e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.post("/api/spaces", async (req, res) => {
     try {
-      const space = await createSpace(req.body.name || "Nuevo Espacio");
+      const { createSpace } = await import("./src/agent/spaces.js");
+      const parentId = req.body.parentId === undefined || req.body.parentId === null || req.body.parentId === '' ? null : String(req.body.parentId);
+      const space = await createSpace(req.body.name || "Nuevo Espacio", parentId);
       res.json(space);
     } catch(e: any) { res.status(500).json({ error: e.message }); }
   });
