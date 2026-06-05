@@ -74,8 +74,7 @@ async function generateEmbedding(text: string): Promise<number[]> {
 export async function addEpisodicMemory(content: string) {
   try {
     const embedding = await generateEmbedding(content);
-    // pgvector format string: [0.1, 0.2, 0.3]
-    const embeddingStr = `[${embedding.join(',')}]`;
+    const embeddingStr = JSON.stringify(embedding);
 
     await pool.query(
       'INSERT INTO episodic_memory_v2 (content, embedding, created_at) VALUES ($1, $2, $3)',
@@ -86,23 +85,37 @@ export async function addEpisodicMemory(content: string) {
   }
 }
 
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 export async function searchEpisodicMemory(query: string, limit: number = 3, threshold: number = 0.5): Promise<string[]> {
   try {
     const queryEmbedding = await generateEmbedding(query);
-    const queryEmbeddingStr = `[${queryEmbedding.join(',')}]`;
 
-    // Semantic search using pgvector's cosine distance operator <=>
-    // 1 - (embedding <=> query) = cosine similarity score
     const { rows } = await pool.query(
-      `SELECT content, 1 - (embedding <=> $1) as similarity 
-       FROM episodic_memory_v2 
-       WHERE 1 - (embedding <=> $1) >= $2
-       ORDER BY embedding <=> $1 
-       LIMIT $3`,
-      [queryEmbeddingStr, threshold, limit]
+      'SELECT content, embedding FROM episodic_memory_v2 ORDER BY created_at DESC LIMIT 1000'
     );
 
-    return rows.map((r: any) => r.content);
+    const scored = rows.map((r: any) => {
+      let emb: number[] = [];
+      try { emb = JSON.parse(r.embedding); } catch {}
+      const score = emb.length > 0 ? cosineSimilarity(queryEmbedding, emb) : 0;
+      return { content: r.content, score };
+    });
+
+    return scored
+      .filter(s => s.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.content);
   } catch (error) {
     console.error('Error searching episodic memory:', error);
     return [];
