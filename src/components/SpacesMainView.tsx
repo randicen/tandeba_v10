@@ -6,6 +6,8 @@ import { ThreadListItem } from './ThreadListItem';
 import { SpaceSidebar } from './SpaceSidebar';
 import { SpaceChatInput } from './SpaceChatInput';
 import { CreateSpaceModal } from './CreateSpaceModal';
+import { SearchResults } from './SearchResults';
+import { RenameSpaceModal } from './RenameSpaceModal';
 
 interface Space {
   id: string;
@@ -39,12 +41,14 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [subspacesShown, setSubspacesShown] = useState(PAGE_SIZE);
   const [threadsShown, setThreadsShown] = useState(PAGE_SIZE);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [renamingRootSpace, setRenamingRootSpace] = useState<Space | null>(null);
 
   const activeSpace = activeSpaceId ? allSpaces.find(s => s.id === activeSpaceId) || null : null;
 
@@ -80,6 +84,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
     setSubspacesShown(PAGE_SIZE);
     setThreadsShown(PAGE_SIZE);
     setSearch('');
+    setSearchOpen(false);
     setMenuOpen(false);
     setEditingName(false);
   }, [activeSpaceId]);
@@ -180,9 +185,23 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar espacios..."
+                onFocus={() => setSearchOpen(true)}
+                placeholder="Buscar en todo el árbol..."
                 className="pl-9 pr-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 w-64"
               />
+              {searchOpen && search.trim() && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setSearchOpen(false)} />
+                  <SearchResults
+                    query={search}
+                    spaces={allSpaces}
+                    sessions={sessions}
+                    onClose={() => { setSearchOpen(false); setSearch(''); }}
+                    onSelectSpace={(id) => onSelectSpace(id)}
+                    onSelectThread={(sessionId, spaceId) => onSelectThread(sessionId, spaceId)}
+                  />
+                </>
+              )}
             </div>
             <button
               onClick={() => setCreateModalOpen(true)}
@@ -194,30 +213,34 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {filteredRootSpaces.length === 0 ? (
+          {rootSpaces.length === 0 ? (
             <div className="text-center py-16">
-              <p className="text-gray-500 mb-3">
-                {search ? 'No se encontraron espacios' : 'Aún no tienes espacios'}
-              </p>
-              {!search && (
-                <button
-                  onClick={() => setCreateModalOpen(true)}
-                  className="text-sm text-blue-600 hover:underline"
-                >
-                  Crear el primero
-                </button>
-              )}
+              <p className="text-gray-500 mb-3">Aún no tienes espacios</p>
+              <button
+                onClick={() => setCreateModalOpen(true)}
+                className="text-sm text-blue-600 hover:underline"
+              >
+                Crear el primero
+              </button>
             </div>
           ) : (
             <div className="border border-gray-200 rounded-lg overflow-hidden bg-white max-w-4xl">
-              {filteredRootSpaces.map(space => (
-                <SpaceListItem
-                  key={space.id}
-                  id={space.id}
-                  name={space.name}
-                  updatedAt={space.updatedAt}
-                  onClick={() => onSelectSpace(space.id)}
-                />
+              {rootSpaces.map(space => (
+                <div key={space.id} className="relative group">
+                  <SpaceListItem
+                    id={space.id}
+                    name={space.name}
+                    updatedAt={space.updatedAt}
+                    onClick={() => onSelectSpace(space.id)}
+                  />
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setRenamingRootSpace(space); }}
+                    className="absolute right-12 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Renombrar"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -232,6 +255,14 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
             onSelectSpace(id);
           }}
         />
+
+        {renamingRootSpace && (
+          <RenameSpaceModal
+            space={renamingRootSpace}
+            onClose={() => setRenamingRootSpace(null)}
+            onRenamed={() => { loadSpaces(); setRenamingRootSpace(null); }}
+          />
+        )}
       </div>
     );
   }
@@ -275,9 +306,23 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar..."
-                className="pl-9 pr-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 w-48"
+                onFocus={() => setSearchOpen(true)}
+                placeholder="Buscar en todo el árbol..."
+                className="pl-9 pr-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 w-64"
               />
+              {searchOpen && search.trim() && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setSearchOpen(false)} />
+                  <SearchResults
+                    query={search}
+                    spaces={allSpaces}
+                    sessions={sessions}
+                    onClose={() => { setSearchOpen(false); setSearch(''); }}
+                    onSelectSpace={(id) => onSelectSpace(id)}
+                    onSelectThread={(sessionId, spaceId) => onSelectThread(sessionId, spaceId)}
+                  />
+                </>
+              )}
             </div>
             <div className="relative">
               <button

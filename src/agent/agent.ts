@@ -187,6 +187,7 @@ export async function getSession(id: string): Promise<AgentSession | undefined> 
       };
     }),
     status: data.status,
+    spaceId: data.space_id || null,
     createdAt: typeof data.created_at === 'string' ? parseInt(data.created_at, 10) : Number(data.created_at),
     updatedAt: typeof data.updated_at === 'string' ? parseInt(data.updated_at, 10) : Number(data.updated_at)
   };
@@ -195,7 +196,7 @@ export async function getSession(id: string): Promise<AgentSession | undefined> 
 }
 
 export async function getSessionDelta(id: string, clientMsgCount: number): Promise<Partial<AgentSession> | undefined> {
-  const { rows: sessionRows } = await pool.query('SELECT status, updated_at FROM sessions WHERE id = $1', [id]);
+  const { rows: sessionRows } = await pool.query('SELECT status, space_id, updated_at FROM sessions WHERE id = $1', [id]);
   const data = sessionRows[0];
   if (!data) return undefined;
   
@@ -229,6 +230,7 @@ export async function getSessionDelta(id: string, clientMsgCount: number): Promi
 
   return {
     status: data.status,
+    spaceId: data.space_id || null,
     messages: newMessages,
     updatedAt: typeof data.updated_at === 'string' ? parseInt(data.updated_at, 10) : Number(data.updated_at)
   } as any;

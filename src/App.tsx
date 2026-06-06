@@ -6,7 +6,8 @@ import {
   Search, Globe, UploadCloud, DownloadCloud, Terminal, FolderSearch, Eye, Code, Folder,
   Maximize, Minimize, Minus, X, ChevronLeft, ChevronRight, FileSpreadsheet, Trash2, Edit2, Undo, Redo, Paperclip,
   Bold, Italic, Underline, Strikethrough, Highlighter, Palette, MessageSquarePlus, AlignLeft, AlignCenter, AlignRight,
-  Indent, Outdent, Scissors, MoreHorizontal, ThumbsUp, Check, MessageSquare, CornerUpLeft, Link, List, ListOrdered, Heading1, Heading2, Heading3, PanelRightClose, Wrench
+  Indent, Outdent, Scissors, MoreHorizontal, ThumbsUp, Check, MessageSquare, CornerUpLeft, Link, List, ListOrdered, Heading1, Heading2, Heading3, PanelRightClose, Wrench,
+  ArrowLeft
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -324,7 +325,35 @@ export default function App() {
             </div>
             <div className="flex-1 flex justify-center overflow-hidden">
               <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 truncate">
-                <Bot className="w-4 h-4 text-blue-600" />
+                {activeSessionDetail?.spaceId && (() => {
+                  const path: any[] = [];
+                  let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
+                  const visited = new Set<string>();
+                  while (cur && !visited.has(cur.id)) {
+                    visited.add(cur.id);
+                    path.unshift(cur);
+                    cur = spaces.find((s: any) => s.id === cur.parentId);
+                  }
+                  return (
+                    <>
+                      <button
+                        onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
+                        className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50"
+                        title="Volver al Espacio"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <Folder className="w-3.5 h-3.5" />
+                        <span className="text-xs font-medium truncate max-w-[160px]">
+                          {path.map((p, i) => (
+                            <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-0.5">›</span>}{p.name}</span>
+                          ))}
+                        </span>
+                      </button>
+                      <span className="text-gray-300">/</span>
+                    </>
+                  );
+                })()}
+                <Bot className="w-4 h-4 text-blue-600 shrink-0" />
                 <span className="truncate">{activeSessionDetail.name || 'Conversación'}</span>
               </div>
             </div>
