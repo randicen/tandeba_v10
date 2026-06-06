@@ -17,7 +17,7 @@ interface SpaceListItemProps {
 export function SpaceListItem({ name, updatedAt, archived, onClick, onRename, onArchive, onMove, onDelete }: SpaceListItemProps) {
   const hasMenu = !!(onRename || onArchive || onMove || onDelete);
   return (
-    <div className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors group border-b border-gray-100 last:border-b-0">
+    <div className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors group border-b border-gray-100 last:border-b-0 first:rounded-t-lg last:rounded-b-lg">
       <button
         onClick={onClick}
         className="flex items-center gap-3 flex-1 min-w-0 text-left"

@@ -52,6 +52,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
   const [menuOpen, setMenuOpen] = useState(false);
   const [renamingRootSpace, setRenamingRootSpace] = useState<Space | null>(null);
   const [movingSpace, setMovingSpace] = useState<Space | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   const activeSpace = activeSpaceId ? allSpaces.find(s => s.id === activeSpaceId) || null : null;
 
@@ -90,6 +91,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
     setSearchOpen(false);
     setMenuOpen(false);
     setEditingName(false);
+    setShowArchived(false);
   }, [activeSpaceId]);
 
   // Subespacios: hijos del espacio activo, ordenados por última actividad
@@ -107,8 +109,19 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
     : [];
 
   // Espacios de raíz (vista raíz): ordenados por última actividad
+  // Cuando showArchived está activo, mostramos los archivados en vez de los activos.
+  // Un espacio con padre archivado se trata como huérfano y aparece en raíz para que sea recuperable.
   const rootSpaces = allSpaces
-    .filter(s => (s.parentId === null || s.parentId === '') && !s.archived)
+    .filter(s => {
+      const isRoot = s.parentId === null || s.parentId === '';
+      if (showArchived) return s.archived && isRoot;
+      if (!isRoot) {
+        const parent = allSpaces.find(p => p.id === s.parentId);
+        if (parent?.archived) return true; // huérfano
+        return false;
+      }
+      return !s.archived;
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   // Filtrado por búsqueda
@@ -240,22 +253,34 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
             >
               <Plus className="w-4 h-4" /> Nuevo espacio
             </button>
+            <button
+              onClick={() => setShowArchived(!showArchived)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${showArchived ? 'bg-gray-800 text-white hover:bg-gray-700' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+              title={showArchived ? 'Ocultar archivados' : 'Mostrar archivados'}
+            >
+              <Archive className="w-4 h-4" />
+              {showArchived ? 'Ocultar archivados' : 'Ver archivados'}
+            </button>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
           {rootSpaces.length === 0 ? (
             <div className="text-center py-16">
-              <p className="text-gray-500 mb-3">Aún no tienes espacios</p>
-              <button
-                onClick={() => setCreateModalOpen(true)}
-                className="text-sm text-blue-600 hover:underline"
-              >
-                Crear el primero
-              </button>
+              <p className="text-gray-500 mb-3">
+                {showArchived ? 'No tienes espacios archivados' : 'Aún no tienes espacios'}
+              </p>
+              {!showArchived && (
+                <button
+                  onClick={() => setCreateModalOpen(true)}
+                  className="text-sm text-blue-600 hover:underline"
+                >
+                  Crear el primero
+                </button>
+              )}
             </div>
           ) : (
-            <div className="border border-gray-200 rounded-lg overflow-hidden bg-white max-w-4xl">
+            <div className="border border-gray-200 rounded-lg bg-white max-w-4xl">
               {rootSpaces.map(space => (
                 <SpaceListItem
                   key={space.id}
@@ -422,7 +447,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
               </p>
             ) : (
               <>
-                <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+                <div className="border border-gray-200 rounded-lg bg-white">
                   {visibleSubspaces.map(s => (
                     <SpaceListItem
                       key={s.id}
