@@ -361,6 +361,33 @@ async function startServer() {
     } catch(e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  app.put("/api/spaces/:id/archive", async (req, res) => {
+    try {
+      const { archiveSpace } = await import("./src/agent/spaces.js");
+      const archived = req.body.archived === true;
+      await archiveSpace(req.params.id, archived);
+      res.json({ status: "ok", archived });
+    } catch(e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put("/api/spaces/:id/move", async (req, res) => {
+    try {
+      const { moveSpace, getDescendantIds, getSpace } = await import("./src/agent/spaces.js");
+      const newParentId = req.body.parentId === undefined || req.body.parentId === null || req.body.parentId === '' ? null : String(req.body.parentId);
+      // Prevenir mover a sí mismo o a un descendiente (ciclo)
+      if (newParentId) {
+        const descendants = await getDescendantIds(req.params.id);
+        if (descendants.has(newParentId)) {
+          return res.status(400).json({ error: "No puedes mover un espacio a uno de sus descendientes" });
+        }
+        const target = await getSpace(newParentId);
+        if (!target) return res.status(404).json({ error: "Espacio destino no encontrado" });
+      }
+      await moveSpace(req.params.id, newParentId);
+      res.json({ status: "ok" });
+    } catch(e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   app.delete("/api/spaces/:id", async (req, res) => {
     try {
       await deleteSpace(req.params.id);

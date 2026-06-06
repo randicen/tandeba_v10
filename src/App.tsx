@@ -317,47 +317,39 @@ export default function App() {
       {/* Main Content */}
       {activeSessionDetail ? (
         <main className="flex-1 flex flex-col min-w-0 bg-white relative shadow-sm z-10 w-full">
-          <header className="flex items-center justify-between p-3 border-b border-gray-200 bg-white shrink-0 z-20">
-            <div className="w-[100px]">
-              <button onClick={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500 transition" title={isLeftSidebarOpen ? "Ocultar menú" : "Mostrar menú"}>
-                {isLeftSidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-              </button>
+          <header className="flex items-center justify-between gap-3 p-3 border-b border-gray-200 bg-white shrink-0 z-20">
+            <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 min-w-0 flex-1">
+              {activeSessionDetail?.spaceId && (() => {
+                const path: any[] = [];
+                let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
+                const visited = new Set<string>();
+                while (cur && !visited.has(cur.id)) {
+                  visited.add(cur.id);
+                  path.unshift(cur);
+                  cur = spaces.find((s: any) => s.id === cur.parentId);
+                }
+                return (
+                  <>
+                    <button
+                      onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
+                      className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 shrink-0"
+                      title="Volver al Espacio"
+                    >
+                      <Folder className="w-3.5 h-3.5" />
+                      <span className="text-xs font-medium truncate max-w-[200px]">
+                        {path.map((p, i) => (
+                          <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-0.5">›</span>}{p.name}</span>
+                        ))}
+                      </span>
+                    </button>
+                    <span className="text-gray-300 shrink-0">/</span>
+                  </>
+                );
+              })()}
+              <Bot className="w-4 h-4 text-blue-600 shrink-0" />
+              <span className="truncate">{activeSessionDetail.name || 'Conversación'}</span>
             </div>
-            <div className="flex-1 flex justify-center overflow-hidden">
-              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 truncate">
-                {activeSessionDetail?.spaceId && (() => {
-                  const path: any[] = [];
-                  let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
-                  const visited = new Set<string>();
-                  while (cur && !visited.has(cur.id)) {
-                    visited.add(cur.id);
-                    path.unshift(cur);
-                    cur = spaces.find((s: any) => s.id === cur.parentId);
-                  }
-                  return (
-                    <>
-                      <button
-                        onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
-                        className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50"
-                        title="Volver al Espacio"
-                      >
-                        <ArrowLeft className="w-3.5 h-3.5" />
-                        <Folder className="w-3.5 h-3.5" />
-                        <span className="text-xs font-medium truncate max-w-[160px]">
-                          {path.map((p, i) => (
-                            <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-0.5">›</span>}{p.name}</span>
-                          ))}
-                        </span>
-                      </button>
-                      <span className="text-gray-300">/</span>
-                    </>
-                  );
-                })()}
-                <Bot className="w-4 h-4 text-blue-600 shrink-0" />
-                <span className="truncate">{activeSessionDetail.name || 'Conversación'}</span>
-              </div>
-            </div>
-            <div className="w-[100px] flex justify-end">
+            <div className="flex items-center gap-2 shrink-0">
               {!isWorkspaceSidebarOpen && (
                 <button onClick={() => setIsWorkspaceSidebarOpen(true)} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500 transition flex items-center gap-2" title="Bóveda">
                   <span className="text-xs font-semibold hidden sm:inline-block">Bóveda</span>

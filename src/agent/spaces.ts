@@ -6,6 +6,7 @@ export interface Space {
   name: string;
   instructions: string;
   parentId: string | null;
+  archived: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -16,6 +17,7 @@ function rowToSpace(r: any): Space {
     name: r.name,
     instructions: r.instructions || '',
     parentId: r.parent_id || null,
+    archived: Number(r.archived || 0) === 1,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -25,22 +27,29 @@ export async function createSpace(name: string, parentId: string | null = null):
   const id = uuidv4();
   const now = Date.now();
   await pool.query(
-    'INSERT INTO spaces (id, name, instructions, parent_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)',
-    [id, name, '', parentId, now, now]
+    'INSERT INTO spaces (id, name, instructions, parent_id, archived, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [id, name, '', parentId, 0, now, now]
   );
-  return { id, name, instructions: '', parentId, createdAt: now, updatedAt: now };
+  return { id, name, instructions: '', parentId, archived: false, createdAt: now, updatedAt: now };
 }
 
-export async function getSpaces(parentId?: string | null): Promise<Space[]> {
-  let sql = 'SELECT id, name, COALESCE(instructions, \'\') as instructions, COALESCE(parent_id, \'\') as parent_id, created_at, updated_at FROM spaces';
+export async function getSpaces(parentId?: string | null, includeArchived = false): Promise<Space[]> {
+  let sql = 'SELECT id, name, COALESCE(instructions, \'\') as instructions, COALESCE(parent_id, \'\') as parent_id, COALESCE(archived, 0) as archived, created_at, updated_at FROM spaces';
   const params: any[] = [];
+  const conditions: string[] = [];
   if (parentId !== undefined) {
     if (parentId === null) {
-      sql += ' WHERE parent_id IS NULL OR parent_id = \'\'';
+      conditions.push('(parent_id IS NULL OR parent_id = \'\')');
     } else {
-      sql += ' WHERE parent_id = $1';
+      conditions.push('parent_id = ?');
       params.push(parentId);
     }
+  }
+  if (!includeArchived) {
+    conditions.push('(archived IS NULL OR archived = 0)');
+  }
+  if (conditions.length > 0) {
+    sql += ' WHERE ' + conditions.join(' AND ');
   }
   sql += ' ORDER BY updated_at DESC';
   const { rows } = await pool.query(sql, params.length > 0 ? params : undefined);
@@ -49,14 +58,14 @@ export async function getSpaces(parentId?: string | null): Promise<Space[]> {
 
 export async function getAllSpacesFlat(): Promise<Space[]> {
   const { rows } = await pool.query(
-    'SELECT id, name, COALESCE(instructions, \'\') as instructions, COALESCE(parent_id, \'\') as parent_id, created_at, updated_at FROM spaces ORDER BY updated_at DESC'
+    'SELECT id, name, COALESCE(instructions, \'\') as instructions, COALESCE(parent_id, \'\') as parent_id, COALESCE(archived, 0) as archived, created_at, updated_at FROM spaces ORDER BY updated_at DESC'
   );
   return rows.map(rowToSpace);
 }
 
 export async function getSpace(id: string): Promise<Space | null> {
   const { rows } = await pool.query(
-    'SELECT id, name, COALESCE(instructions, \'\') as instructions, COALESCE(parent_id, \'\') as parent_id, created_at, updated_at FROM spaces WHERE id = $1',
+    'SELECT id, name, COALESCE(instructions, \'\') as instructions, COALESCE(parent_id, \'\') as parent_id, COALESCE(archived, 0) as archived, created_at, updated_at FROM spaces WHERE id = $1',
     [id]
   );
   if (rows.length === 0) return null;
@@ -73,6 +82,41 @@ export async function renameSpace(id: string, name: string): Promise<void> {
 
 export async function deleteSpace(id: string): Promise<void> {
   await pool.query('DELETE FROM spaces WHERE id = $1', [id]);
+}
+
+export async function archiveSpace(id: string, archived: boolean): Promise<void> {
+  await pool.query('UPDATE spaces SET archived = $1, updated_at = $2 WHERE id = $3', [archived ? 1 : 0, Date.now(), id]);
+}
+
+export async function moveSpace(id: string, newParentId: string | null): Promise<void> {
+  await pool.query('UPDATE spaces SET parent_id = $1, updated_at = $2 WHERE id = $3', [newParentId, Date.now(), id]);
+}
+
+/**
+ * Devuelve todos los IDs descendientes de un espacio (incluyendo el propio).
+ * Se usa para evitar mover un espacio a uno de sus descendientes (lo que crearía un ciclo).
+ */
+export async function getDescendantIds(rootId: string): Promise<Set<string>> {
+  const all = await getAllSpacesFlat();
+  const childrenOf = new Map<string, string[]>();
+  for (const s of all) {
+    const key = s.parentId || '';
+    if (!childrenOf.has(key)) childrenOf.set(key, []);
+    childrenOf.get(key)!.push(s.id);
+  }
+  const result = new Set<string>([rootId]);
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    const children = childrenOf.get(cur) || [];
+    for (const c of children) {
+      if (!result.has(c)) {
+        result.add(c);
+        stack.push(c);
+      }
+    }
+  }
+  return result;
 }
 
 /**

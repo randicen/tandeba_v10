@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Plus, MoreVertical, Search, ArrowLeft, Trash2, Edit2 } from 'lucide-react';
+import { Plus, MoreVertical, Search, ArrowLeft, Trash2, Edit2, Archive, ArchiveRestore, FolderInput } from 'lucide-react';
 import { Breadcrumb, formatRelativeTime, BreadcrumbItem } from './Breadcrumb';
 import { SpaceListItem } from './SpaceListItem';
 import { ThreadListItem } from './ThreadListItem';
@@ -8,6 +8,8 @@ import { SpaceChatInput } from './SpaceChatInput';
 import { CreateSpaceModal } from './CreateSpaceModal';
 import { SearchResults } from './SearchResults';
 import { RenameSpaceModal } from './RenameSpaceModal';
+import { MoveSpaceModal } from './MoveSpaceModal';
+import { SpaceRowMenu } from './SpaceRowMenu';
 
 interface Space {
   id: string;
@@ -49,6 +51,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
   const [nameDraft, setNameDraft] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [renamingRootSpace, setRenamingRootSpace] = useState<Space | null>(null);
+  const [movingSpace, setMovingSpace] = useState<Space | null>(null);
 
   const activeSpace = activeSpaceId ? allSpaces.find(s => s.id === activeSpaceId) || null : null;
 
@@ -92,7 +95,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
   // Subespacios: hijos del espacio activo, ordenados por última actividad
   const subspaces = activeSpaceId
     ? allSpaces
-        .filter(s => s.parentId === activeSpaceId)
+        .filter(s => s.parentId === activeSpaceId && !s.archived)
         .sort((a, b) => b.updatedAt - a.updatedAt)
     : [];
 
@@ -105,7 +108,7 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
 
   // Espacios de raíz (vista raíz): ordenados por última actividad
   const rootSpaces = allSpaces
-    .filter(s => s.parentId === null || s.parentId === '')
+    .filter(s => (s.parentId === null || s.parentId === '') && !s.archived)
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   // Filtrado por búsqueda
@@ -154,6 +157,34 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
       onSelectSpace(null);
     } catch (e) {
       console.error('Error deleting:', e);
+    }
+  };
+
+  const deleteSpaceAction = async (space: Space) => {
+    if (!confirm(`¿Eliminar el espacio "${space.name}" y todos sus subespacios?`)) return;
+    try {
+      await fetch(`/api/spaces/${space.id}`, { method: 'DELETE' });
+      await loadSpaces();
+      if (activeSpaceId === space.id) onSelectSpace(null);
+    } catch (e) {
+      console.error('Error deleting:', e);
+    }
+  };
+
+  const archiveSpaceAction = async (space: Space) => {
+    const newArchived = !space.archived;
+    try {
+      await fetch(`/api/spaces/${space.id}/archive`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived: newArchived }),
+      });
+      await loadSpaces();
+      if (activeSpaceId === space.id && newArchived) {
+        onSelectSpace(space.parentId);
+      }
+    } catch (e) {
+      console.error('Error archiving:', e);
     }
   };
 
@@ -226,21 +257,18 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
           ) : (
             <div className="border border-gray-200 rounded-lg overflow-hidden bg-white max-w-4xl">
               {rootSpaces.map(space => (
-                <div key={space.id} className="relative group">
-                  <SpaceListItem
-                    id={space.id}
-                    name={space.name}
-                    updatedAt={space.updatedAt}
-                    onClick={() => onSelectSpace(space.id)}
-                  />
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setRenamingRootSpace(space); }}
-                    className="absolute right-12 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Renombrar"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                <SpaceListItem
+                  key={space.id}
+                  id={space.id}
+                  name={space.name}
+                  updatedAt={space.updatedAt}
+                  archived={space.archived}
+                  onClick={() => onSelectSpace(space.id)}
+                  onRename={() => setRenamingRootSpace(space)}
+                  onArchive={async () => { await archiveSpaceAction(space); }}
+                  onMove={() => setMovingSpace(space)}
+                  onDelete={() => deleteSpaceAction(space)}
+                />
               ))}
             </div>
           )}
@@ -261,6 +289,15 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
             space={renamingRootSpace}
             onClose={() => setRenamingRootSpace(null)}
             onRenamed={() => { loadSpaces(); setRenamingRootSpace(null); }}
+          />
+        )}
+
+        {movingSpace && (
+          <MoveSpaceModal
+            space={movingSpace}
+            allSpaces={allSpaces}
+            onClose={() => setMovingSpace(null)}
+            onMoved={() => { loadSpaces(); setMovingSpace(null); }}
           />
         )}
       </div>
@@ -291,9 +328,9 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
         <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={() => onSelectSpace(null)}
+              onClick={() => onSelectSpace(activeSpace?.parentId ?? null)}
               className="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-              title="Volver a Espacios"
+              title={activeSpace?.parentId ? 'Volver al espacio padre' : 'Volver a Espacios'}
             >
               <ArrowLeft className="w-4 h-4" />
             </button>
@@ -324,32 +361,14 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
                 </>
               )}
             </div>
-            <div className="relative">
-              <button
-                onClick={() => setMenuOpen(!menuOpen)}
-                className="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
-              {menuOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1">
-                    <button
-                      onClick={() => { setMenuOpen(false); setNameDraft(activeSpace.name); setEditingName(true); }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 text-left"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" /> Renombrar
-                    </button>
-                    <button
-                      onClick={() => { setMenuOpen(false); handleDelete(); }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" /> Eliminar
-                    </button>
-                  </div>
-                </>
-              )}
+            <div>
+              <SpaceRowMenu
+                isArchived={!!activeSpace.archived}
+                onRename={() => { setNameDraft(activeSpace.name); setEditingName(true); }}
+                onArchive={async () => { await archiveSpaceAction(activeSpace); }}
+                onMove={() => setMovingSpace(activeSpace)}
+                onDelete={() => deleteSpaceAction(activeSpace)}
+              />
             </div>
           </div>
         </div>
@@ -410,7 +429,12 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
                       id={s.id}
                       name={s.name}
                       updatedAt={s.updatedAt}
+                      archived={s.archived}
                       onClick={() => onSelectSpace(s.id)}
+                      onRename={() => setRenamingRootSpace(s)}
+                      onArchive={async () => { await archiveSpaceAction(s); }}
+                      onMove={() => setMovingSpace(s)}
+                      onDelete={() => deleteSpaceAction(s)}
                     />
                   ))}
                 </div>
@@ -486,6 +510,15 @@ export function SpacesMainView({ activeSpaceId, onSelectSpace, onSelectThread }:
         onClose={() => setCreateModalOpen(false)}
         onCreated={() => loadSpaces()}
       />
+
+      {movingSpace && (
+        <MoveSpaceModal
+          space={movingSpace}
+          allSpaces={allSpaces}
+          onClose={() => setMovingSpace(null)}
+          onMoved={() => { loadSpaces(); setMovingSpace(null); }}
+        />
+      )}
     </div>
   );
 }
