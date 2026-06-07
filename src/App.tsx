@@ -192,10 +192,23 @@ export default function App() {
     }
   };
 
-  const createSession = async (spaceId?: string | null): Promise<{ id: string } | null> => {
+  const createSession = async (nameOrSpaceId?: string | null, spaceIdArg?: string | null): Promise<{ id: string } | null> => {
     try {
-      const sid = spaceId === undefined ? activeSpaceId : spaceId;
-      const res = await api.post('/sessions', { name: `Nuevo Chat`, spaceId: sid || null });
+      // Compatibilidad: createSession() sin args usa el activeSpaceId.
+      // createSession(name, undefined) crea con ese nombre en el activeSpaceId.
+      // createSession(undefined, spaceId) crea "Nuevo Chat" en ese spaceId.
+      let sessionName: string;
+      let sid: string | null | undefined;
+      if (spaceIdArg === undefined && typeof nameOrSpaceId === 'string' && nameOrSpaceId.length > 0) {
+        // Caso: createSession(name) — usar activeSpaceId
+        sessionName = nameOrSpaceId;
+        sid = activeSpaceId;
+      } else {
+        // Caso: createSession() o createSession(undefined, spaceId)
+        sessionName = 'Nuevo Chat';
+        sid = spaceIdArg !== undefined ? spaceIdArg : activeSpaceId;
+      }
+      const res = await api.post('/sessions', { name: sessionName, spaceId: sid || null });
       setActiveSessionId(res.data.id);
       await loadSessions(sid || undefined);
       setCriticalError(null);
@@ -403,7 +416,7 @@ export default function App() {
         <WelcomeScreen
           userName="doctor Juan"
           onSubmit={async (message) => {
-            const newSession = await createSession(null);
+            const newSession = await createSession(message.slice(0, 60));
             if (!newSession) return;
             try {
               await api.post(`/sessions/${newSession.id}/message`, { content: message });
