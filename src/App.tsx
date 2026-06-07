@@ -2837,8 +2837,8 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
     const msg = uniqueMessages[i];
     if (msg.role === 'system') continue;
 
-    const isSystemScreenshotMsg = msg.role === 'user' && 
-      Array.isArray(msg.content) && 
+    const isSystemScreenshotMsg = msg.role === 'user' &&
+      Array.isArray(msg.content) &&
       msg.content.some((c: any) => c.text === "Here is the browser screenshot after the action:");
 
     if (msg.role === 'user' && !isSystemScreenshotMsg) {
@@ -2846,26 +2846,29 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
       currentTurn = { user: msg, actions: [], responses: [], interventions: [], tool_results: [] };
     } else if (msg.role === 'assistant') {
       if (!currentTurn) currentTurn = { user: null, actions: [], responses: [], interventions: [], tool_results: [] };
-      
+
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         currentTurn.actions.push(...msg.tool_calls.map((tc: any) => ({ ...tc, screenshotUrl: null })));
       }
-      
-      if (msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
-        if (typeof msg.content === 'string') {
-          const stripped = stripReflection(msg.content);
-          if (stripped) {
-             currentTurn.responses.push({ ...msg, content: stripped });
-          }
-        } else if (Array.isArray(msg.content)) {
-          const newContent = msg.content.map((c: any) => {
-            if (c.type === 'text') return { ...c, text: stripReflection(c.text) };
-            return c;
-          }).filter((c: any) => c.type !== 'text' || c.text.length > 0);
-          
-          if (newContent.length > 0) {
-            currentTurn.responses.push({ ...msg, content: newContent });
-          }
+
+      // Solo guardamos el ÚLTIMO assistant message con content significativo.
+      // Los mensajes intermedios del agente (cuando está ejecutando tools paso a
+      // paso) se descartan para no saturar la UI; sus tool_calls ya quedaron
+      // registrados en `actions`. Cuando el agente termina con un mensaje final,
+      // ese es el que verá el usuario.
+      if (msg.content && typeof msg.content === 'string' && msg.content.trim().length > 0) {
+        const stripped = stripReflection(msg.content);
+        if (stripped) {
+          currentTurn.responses = [{ ...msg, content: stripped }];
+        }
+      } else if (Array.isArray(msg.content)) {
+        const newContent = msg.content.map((c: any) => {
+          if (c.type === 'text') return { ...c, text: stripReflection(c.text) };
+          return c;
+        }).filter((c: any) => c.type !== 'text' || c.text.length > 0);
+
+        if (newContent.length > 0) {
+          currentTurn.responses = [{ ...msg, content: newContent }];
         }
       }
     } else if (msg.role === 'tool') {
