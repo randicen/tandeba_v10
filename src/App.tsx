@@ -21,6 +21,7 @@ import WelcomeScreen from './components/WelcomeScreen';
 import CustomizePage from './components/CustomizePage';
 import VaultsView from './components/VaultsView';
 import { SpacesMainView } from './components/SpacesMainView';
+import { PromptComposer } from './components/PromptComposer';
 
 // API Client
 const api = axios.create({ baseURL: '/api' });
@@ -70,13 +71,16 @@ const getToolDisplay = (name?: string, argsStr?: string) => {
   return { icon: Activity, title: 'Herramienta interna', detail: 'Completando tarea especializada' };
 };
 
-function SpacesView({ spaces, sessions, activeSpaceId, onSelectSpace, onCreateSpace, onCreateSession, onSelectSession, onBackToSpaces }: any) {
+function SpacesView({ spaces, sessions, activeSpaceId, onSelectSpace, onCreateSpace, onCreateSession, onSelectSession, onBackToSpaces, setActiveSpaceId }: any) {
   // Wrapper que delega a SpacesMainView (vista raíz + detalle con jerarquía)
   return (
     <SpacesMainView
       activeSpaceId={activeSpaceId}
       onSelectSpace={onSelectSpace}
-      onSelectThread={(sessionId: string) => onSelectSession(sessionId)}
+      onSelectThread={(sessionId: string, spaceId: string | null) => {
+        onSelectSession(sessionId);
+        if (spaceId) setActiveSpaceId(spaceId);
+      }}
     />
   );
 }
@@ -122,7 +126,9 @@ export default function App() {
 
   const loadSessions = async (spaceId?: string) => {
     try {
-      const url = spaceId ? `/api/sessions?spaceId=${spaceId}` : '/api/sessions';
+      // `api` ya tiene baseURL `/api`, así que NO prefijo `/api/` al path
+      // (antes había un doble `/api/api/` que daba 404 y vaciaba el sidebar).
+      const url = spaceId ? `/sessions?spaceId=${spaceId}` : '/sessions';
       const res = await api.get(url);
       if (Array.isArray(res.data)) {
         setSessions(res.data);
@@ -186,16 +192,18 @@ export default function App() {
     }
   };
 
-  const createSession = async (spaceId?: string | null) => {
+  const createSession = async (spaceId?: string | null): Promise<{ id: string } | null> => {
     try {
       const sid = spaceId === undefined ? activeSpaceId : spaceId;
       const res = await api.post('/sessions', { name: `Nuevo Chat`, spaceId: sid || null });
       setActiveSessionId(res.data.id);
       await loadSessions(sid || undefined);
       setCriticalError(null);
+      return res.data;
     } catch (e: any) {
       console.error("Failed to create session");
       setCriticalError(e.response?.data?.error || e.message || "Error al crear la sesión.");
+      return null;
     }
   };
 
@@ -386,6 +394,7 @@ export default function App() {
           onCreateSpace={createSpace}
           onCreateSession={(sid: string) => createSession(sid)}
           onSelectSession={setActiveSessionId}
+          setActiveSpaceId={setActiveSpaceId}
           isLeftSidebarOpen={isLeftSidebarOpen}
           onToggleSidebar={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)}
           onBackToSpaces={() => setActiveSpaceId(null)}
@@ -393,12 +402,23 @@ export default function App() {
       ) : (
         <WelcomeScreen
           userName="doctor Juan"
-          onSubmit={async (message, m) => { await createSession(null); setTimeout(() => {
-            const sid = sessions[sessions.length - 1]?.id || activeSessionId;
-            if (sid) {
-              api.post(`/sessions/${sid}/message`, { content: message }).catch(() => {});
+          onSubmit={async (message) => {
+            const newSession = await createSession(null);
+            if (!newSession) return;
+            try {
+              await api.post(`/sessions/${newSession.id}/message`, { content: message });
+              // Disparar el step AHORA (después de guardar el mensaje). Si lo
+              // dejamos al useEffect del ChatArea, este se ejecuta cuando aún
+              // no se ha guardado el user message (carrera entre el loadActive
+              // Session y el post /message), y nunca detecta el mensaje
+              // pendiente. El server ignora steps concurrentes (activeExecutions).
+              api.post(`/sessions/${newSession.id}/step`).catch((e: any) =>
+                console.error("Step trigger from welcome failed:", e?.response?.data?.error || e?.message)
+              );
+            } catch (e: any) {
+              console.error("Failed to start session from welcome:", e);
             }
-          }, 200); }}
+          }}
           onAttachFile={async (file) => {
             const fd = new FormData();
             fd.append('file', file);
@@ -2622,41 +2642,12 @@ function ActionsPanel({ actions, isRunning, sessionStatus }: any) {
 }
 
 function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { session: any, onUpdate: () => void, onToggleFiles?: () => void, disablePolling?: boolean }) {
-  const [input, setInput] = useState('');
   const [isProcessingStep, setIsProcessingStep] = useState(false);
   const [optimisticMessage, setOptimisticMessage] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const isSubmittingRef = useRef(false);
-  const chatFileInputRef = useRef<HTMLInputElement>(null);
   const genRef = useRef(0);
-
-  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    const validExtensions = ['.docx', '.txt', '.xlsx', '.pdf'];
-    const lowerName = file.name.toLowerCase();
-    if (!validExtensions.some(ext => lowerName.endsWith(ext))) {
-       alert("Solo se admiten archivos .docx, .txt, .xlsx, .pdf");
-       e.target.value = "";
-       return;
-    }
-    
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      await axios.post(`/api/sessions/${session.id}/workspace/files/upload`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      alert("Archivo adjuntado a la sesión con éxito.");
-    } catch(err: any) {
-      alert("Error subiendo archivo: " + err.message);
-    } finally {
-      e.target.value = "";
-    }
-  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -2666,53 +2657,6 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [session.messages, isProcessingStep, optimisticMessage]);
-
-  const sendMessage = async () => {
-    if (!input.trim() || isSubmittingRef.current) return;
-    isSubmittingRef.current = true;
-    const text = input;
-    setInput('');
-    
-    // Quick optimistic visual
-    setIsProcessingStep(true);
-    setOptimisticMessage(text);
-    const myGen = ++genRef.current;
-    try {
-      await api.post(`/sessions/${session.id}/message`, { content: text });
-      await onUpdate();
-      setOptimisticMessage('');
-      
-      isRequestingStepRef.current = true;
-      api.post(`/sessions/${session.id}/step`)
-      .catch(e => {
-        alert("Error in step: " + (e.response?.data?.error || e.message));
-      })
-      .finally(() => {
-         if (mountedRef.current && genRef.current === myGen) {
-            isRequestingStepRef.current = false;
-            setIsProcessingStep(false);
-            isSubmittingRef.current = false;
-            onUpdate();
-         } else {
-            isSubmittingRef.current = false;
-         }
-      });
-      setTimeout(() => { if (mountedRef.current) onUpdate(); }, 500);
-    } catch(e: any) {
-      if (mountedRef.current) {
-         setIsProcessingStep(false);
-      }
-      isSubmittingRef.current = false;
-      alert("Error sending message: " + (e.response?.data?.error || e.message));
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
 
   const handleHumanResponse = async (toolCallId: string, response: string) => {
     if (isSubmittingRef.current) return;
@@ -2764,40 +2708,99 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
     onUpdateRef.current = onUpdate;
   }, [onUpdate]);
 
+  // Mantener session en un ref para leer status/messages frescos dentro del interval
+  // sin re-crearlo en cada cambio.
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
   const isRequestingStepRef = useRef(false);
 
+  // Disparar el step pendiente UNA vez al montar (o cuando cambia el id de la sesión)
+  // si hay un mensaje del usuario sin respuesta. Esto cubre el caso de abrir
+  // un chat existente que quedó con un user message sin respuesta (por ejemplo,
+  // si el navegador se cerró mientras el agente procesaba).
+  //
+  // NOTA: en el flujo normal (escribir mensaje en el chat), el step se dispara
+  // desde `sendMessage`. En los flujos de creación (WelcomeScreen y SpaceChatInput),
+  // se dispara desde el onSubmit. Este useEffect es solo red de seguridad.
   useEffect(() => {
     if (disablePolling) return;
-    
-    if (session.status === 'running') {
-      isRequestingStepRef.current = false;
+    if (isRequestingStepRef.current) return;
+    const sess = sessionRef.current;
+    if (!sess || !sess.id) return;
+    if (sess.status === 'running' || sess.status === 'waiting_human') return;
+    const messages = sess.messages || [];
+    let lastUserIdx = -1;
+    let lastAssistantIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user' && lastUserIdx === -1) lastUserIdx = i;
+      if (messages[i].role === 'assistant' && lastAssistantIdx === -1) lastAssistantIdx = i;
+      if (lastUserIdx !== -1 && lastAssistantIdx !== -1) break;
     }
-    let processInterval = setInterval(async () => {
-      if (session.status === 'running') {
-        onUpdateRef.current();
-        // Automatically request the next step if we're running and not currently in a step
-        if (!isRequestingStepRef.current) {
-           isRequestingStepRef.current = true;
-           try {
-             const res = await api.post(`/sessions/${session.id}/step`);
-             if (res.data && res.data.status === 'running') {
-                isRequestingStepRef.current = false;
-             }
-             // If status is NOT running, we deliberately LEAVE isRequestingStepRef.current = true
-             // to prevent any further intervals from firing until React re-renders and re-creates
-             // this interval with the new session.status. This eliminates the infinite "de nada" loop.
-           } catch(e: any) {
-             isRequestingStepRef.current = false;
-             console.error("Interval step execution failed:", e.response?.data?.error || e.message);
-           }
-           if (mountedRef.current) {
-               onUpdateRef.current();
-           }
+    if (lastUserIdx <= lastAssistantIdx) return;
+    isRequestingStepRef.current = true;
+    setIsProcessingStep(true);
+    api.post(`/sessions/${sess.id}/step`)
+      .then((res) => {
+        if (res.data && res.data.status === 'running') {
+          isRequestingStepRef.current = false;
         }
+      })
+      .catch((e: any) => {
+        isRequestingStepRef.current = false;
+        console.error("Pending step trigger failed:", e?.response?.data?.error || e?.message);
+      })
+      .finally(() => {
+        if (mountedRef.current) {
+          setIsProcessingStep(false);
+          onUpdateRef.current();
+        }
+      });
+  }, [session.id, disablePolling]);
+
+  // Polling ligero: solo sincroniza mensajes con el server. NO dispara steps
+  // (el trigger está aislado arriba para evitar races con el flujo del usuario).
+  useEffect(() => {
+    if (disablePolling) return;
+    let isMounted = true;
+
+    const tick = async () => {
+      if (!isMounted) return;
+      const sess = sessionRef.current;
+      if (!sess || !sess.id) return;
+
+      // 1) Sincronizar mensajes
+      onUpdateRef.current();
+
+      // 2) Si el server dice que está corriendo, continuar con el siguiente step
+      // (caso "agente en bucle de tools"). Esto es seguro porque respeta
+      // isRequestingStepRef.
+      if (sess.status === 'running' && !isRequestingStepRef.current) {
+        isRequestingStepRef.current = true;
+        try {
+          const res = await api.post(`/sessions/${sess.id}/step`);
+          if (res.data && res.data.status === 'running') {
+            isRequestingStepRef.current = false;
+          }
+        } catch (e: any) {
+          isRequestingStepRef.current = false;
+          console.error("Interval step execution failed:", e?.response?.data?.error || e?.message);
+        }
+        if (mountedRef.current) onUpdateRef.current();
       }
-    }, 5000); // Increased interval to 5 seconds to reduce load
-    return () => clearInterval(processInterval);
-  }, [session.status, session.id]);
+    };
+
+    const initialTimer = setTimeout(tick, 800);
+    const processInterval = setInterval(tick, 3000);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(initialTimer);
+      clearInterval(processInterval);
+    };
+  }, [session.id, disablePolling]);
 
   const stripReflection = (text: string) => {
     return text.replace(/<scratchpad>[\s\S]*?(?:<\/scratchpad>|$)/gi, '')
@@ -3086,42 +3089,76 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
 
       {/* Input Area */}
       <div className="bg-white border-t border-gray-200 px-2 pt-2 pb-4 sm:p-4 shrink-0 z-20">
-        <div className="max-w-3xl mx-auto relative flex items-end gap-2 sm:gap-3 rounded-2xl bg-gray-50 border border-gray-300 focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10 transition-all p-1 sm:p-1.5 shadow-sm">
-          <button
-            onClick={() => chatFileInputRef.current?.click()}
-            className="w-10 h-10 shrink-0 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl flex items-center justify-center transition-all mb-0.5"
-            title="Adjuntar archivo"
-          >
-            <Paperclip className="w-5 h-5" />
-          </button>
-          <input type="file" ref={chatFileInputRef} className="hidden" accept=".docx,.txt,.xlsx,.pdf" onChange={handleFileUpload} />
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Escribe un mensaje al asistente..."
-            className="w-full bg-transparent text-gray-900 text-[14px] sm:text-[15px] p-2 sm:p-3 min-h-[48px] max-h-40 outline-none resize-none placeholder:text-gray-400"
-            rows={1}
-            disabled={isProcessingStep || session.status === 'waiting_human'}
-          />
-          {isActuallyRunning ? (
+        {isActuallyRunning ? (
+          <div className="max-w-3xl mx-auto flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-gray-50 border border-gray-200">
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+              <span>El agente está trabajando...</span>
+            </div>
             <button
               onClick={stopAgent}
-              className="h-10 px-3 sm:px-4 shrink-0 bg-red-100 hover:bg-red-200 text-red-700 font-semibold rounded-xl flex items-center justify-center transition-colors mb-0.5"
+              className="h-9 px-3 sm:px-4 shrink-0 bg-red-100 hover:bg-red-200 text-red-700 font-semibold rounded-xl flex items-center justify-center transition-colors"
             >
               <span className="hidden sm:inline">Detener</span>
-              <X className="w-5 h-5 sm:hidden" />
+              <X className="w-4 h-4 sm:hidden" />
             </button>
-          ) : (
-            <button
-              onClick={sendMessage}
-              disabled={!input.trim() || session.status === 'waiting_human'}
-              className="w-10 h-10 shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all mb-0.5 shadow-sm"
-            >
-              <Send className="w-4 h-4 ml-0.5" />
-            </button>
-          )}
-        </div>
+          </div>
+        ) : (
+          <PromptComposer
+            variant="compact"
+            onSubmit={(text, mode) => {
+              isSubmittingRef.current = true;
+              setIsProcessingStep(true);
+              setOptimisticMessage(text);
+              const myGen = ++genRef.current;
+              (async () => {
+                try {
+                  await api.post(`/sessions/${session.id}/message`, { content: text, metadata: { mode } });
+                  await onUpdate();
+                  setOptimisticMessage('');
+                  isRequestingStepRef.current = true;
+                  api.post(`/sessions/${session.id}/step`)
+                    .catch((e: any) => alert('Error in step: ' + (e.response?.data?.error || e.message)))
+                    .finally(() => {
+                      if (mountedRef.current && genRef.current === myGen) {
+                        isRequestingStepRef.current = false;
+                        setIsProcessingStep(false);
+                        isSubmittingRef.current = false;
+                        onUpdate();
+                      } else {
+                        isSubmittingRef.current = false;
+                      }
+                    });
+                  setTimeout(() => { if (mountedRef.current) onUpdate(); }, 500);
+                } catch (e: any) {
+                  if (mountedRef.current) setIsProcessingStep(false);
+                  isSubmittingRef.current = false;
+                  alert('Error sending message: ' + (e.response?.data?.error || e.message));
+                }
+              })();
+            }}
+            onAttachFile={async (file) => {
+              const validExtensions = ['.docx', '.txt', '.xlsx', '.pdf'];
+              const lowerName = file.name.toLowerCase();
+              if (!validExtensions.some((ext) => lowerName.endsWith(ext))) {
+                alert('Solo se admiten archivos .docx, .txt, .xlsx, .pdf');
+                return;
+              }
+              try {
+                const formData = new FormData();
+                formData.append('file', file);
+                await axios.post(`/api/sessions/${session.id}/workspace/files/upload`, formData, {
+                  headers: { 'Content-Type': 'multipart/form-data' },
+                });
+                alert('Archivo adjuntado a la sesión con éxito.');
+              } catch (err: any) {
+                alert('Error subiendo archivo: ' + (err?.response?.data?.error || err?.message || err));
+              }
+            }}
+            disabled={isProcessingStep || session.status === 'waiting_human'}
+            placeholder="Escribe un mensaje al asistente..."
+          />
+        )}
       </div>
     </>
   );

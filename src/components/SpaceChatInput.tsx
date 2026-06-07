@@ -1,5 +1,5 @@
-import { useState, useRef, KeyboardEvent } from 'react';
-import { Send, Loader2 } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { PromptComposer } from './PromptComposer';
 
 interface SpaceChatInputProps {
   spaceId: string;
@@ -7,62 +7,67 @@ interface SpaceChatInputProps {
   disabled?: boolean;
 }
 
+/**
+ * SpaceChatInput
+ * -----------------------------------------------------------------------------
+ * Composer compacto que vive en la vista detalle de un Espacio. Crea una sesión
+ * nueva con el primer mensaje del usuario, dispara el step del agente, y
+ * delega la navegación al `onThreadCreated`.
+ *
+ * Es un wrapper delgado sobre el `PromptComposer` para que la experiencia sea
+ * idéntica al composer del chat global.
+ */
 export function SpaceChatInput({ spaceId, onThreadCreated, disabled }: SpaceChatInputProps) {
-  const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isSubmittingRef = useRef(false);
 
-  const send = async () => {
-    const value = text.trim();
-    if (!value || sending) return;
+  const handleSubmit = async (value: string) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setSending(true);
     try {
-      const res = await fetch('/api/sessions', {
+      // 1. Crear la sesión con el spaceId del Espacio activo.
+      const createRes = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: value.slice(0, 60), spaceId }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const session = await res.json();
-      setText('');
-      onThreadCreated(session.id);
+      if (!createRes.ok) throw new Error(`HTTP ${createRes.status}`);
+      const session = await createRes.json();
+      const sessionId: string = session.id;
+
+      // 2. Persistir el contenido como primer mensaje del usuario.
+      const msgRes = await fetch(`/api/sessions/${sessionId}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: value }),
+      });
+      if (!msgRes.ok) throw new Error(`HTTP ${msgRes.status}`);
+
+      // 3. Disparar el step. Si el server ya está ejecutando otro step lo
+      // ignora (activeExecutions), así que es seguro disparar también desde
+      // el ChatArea si lo hace.
+      fetch(`/api/sessions/${sessionId}/step`, { method: 'POST' }).catch((e) =>
+        console.error('Step trigger from space input failed:', e)
+      );
+
+      onThreadCreated(sessionId);
     } catch (e) {
       console.error('Error creating thread:', e);
     } finally {
+      isSubmittingRef.current = false;
       setSending(false);
-      textareaRef.current?.focus();
-    }
-  };
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      send();
     }
   };
 
   return (
-    <div className="border-t border-gray-200 bg-white p-3 sm:p-4 shrink-0">
-      <div className="max-w-3xl mx-auto relative flex items-end gap-2 rounded-2xl bg-gray-50 border border-gray-300 focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10 transition-all p-1.5 shadow-sm">
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Escribe un mensaje al asistente para iniciar un nuevo hilo..."
-          rows={1}
-          disabled={disabled || sending}
-          className="w-full bg-transparent text-gray-900 text-[14px] sm:text-[15px] p-2 sm:p-3 min-h-[44px] max-h-32 outline-none resize-none placeholder:text-gray-400 disabled:opacity-50"
-        />
-        <button
-          onClick={send}
-          disabled={!text.trim() || sending || disabled}
-          className="w-10 h-10 shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-all mb-0.5 shadow-sm"
-          title="Enviar"
-        >
-          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4 ml-0.5" />}
-        </button>
-      </div>
+    <div className="border-t border-gray-200 bg-white p-2 sm:p-4 shrink-0">
+      <PromptComposer
+        variant="compact"
+        placeholder="Escribe un mensaje al asistente para iniciar un nuevo hilo..."
+        disabled={disabled || sending}
+        onSubmit={(text) => { void handleSubmit(text); }}
+      />
     </div>
   );
 }
