@@ -405,49 +405,51 @@ export default function App() {
 
       {/* Main Content */}
       {activeSessionDetail ? (
-        <main className="flex-1 flex flex-col min-w-0 bg-white relative shadow-sm z-10 w-full">
-          <header className="flex items-center justify-between gap-3 p-3 border-b border-gray-200 bg-white shrink-0 z-20">
-            <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 min-w-0 flex-1">
-              {activeSessionDetail?.spaceId && (() => {
-                const path: any[] = [];
-                let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
-                const visited = new Set<string>();
-                while (cur && !visited.has(cur.id)) {
-                  visited.add(cur.id);
-                  path.unshift(cur);
-                  cur = spaces.find((s: any) => s.id === cur.parentId);
-                }
-                return (
-                  <>
-                    <button
-                      onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
-                      className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 shrink-0"
-                      title="Volver al Espacio"
-                    >
-                      <Folder className="w-3.5 h-3.5" />
-                      <span className="text-xs font-medium truncate max-w-[200px]">
-                        {path.map((p, i) => (
-                          <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-0.5">›</span>}{p.name}</span>
-                        ))}
-                      </span>
-                    </button>
-                    <span className="text-gray-300 shrink-0">/</span>
-                  </>
-                );
-              })()}
-              <Bot className="w-4 h-4 text-blue-600 shrink-0" />
-              <span className="truncate">{activeSessionDetail.name || 'Conversación'}</span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {!isWorkspaceSidebarOpen && (
-                <button onClick={() => setIsWorkspaceSidebarOpen(true)} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500 transition flex items-center gap-2" title="Bóveda">
-                  <span className="text-xs font-semibold hidden sm:inline-block">Bóveda</span>
-                  <Folder className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </header>
-          <ChatArea session={activeSessionDetail} onUpdate={handleUpdate} onToggleFiles={() => setIsWorkspaceSidebarOpen(true)} />
+        <main className="flex-1 flex flex-col min-w-0 bg-gray-100 relative z-10">
+          <div className="flex-1 flex flex-col w-full max-w-3xl mx-auto bg-white shadow-sm">
+            <header className="flex items-center justify-between gap-3 p-3 border-b border-gray-200 bg-white shrink-0 z-20">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 min-w-0 flex-1">
+                {activeSessionDetail?.spaceId && (() => {
+                  const path: any[] = [];
+                  let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
+                  const visited = new Set<string>();
+                  while (cur && !visited.has(cur.id)) {
+                    visited.add(cur.id);
+                    path.unshift(cur);
+                    cur = spaces.find((s: any) => s.id === cur.parentId);
+                  }
+                  return (
+                    <>
+                      <button
+                        onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
+                        className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 shrink-0"
+                        title="Volver al Espacio"
+                      >
+                        <Folder className="w-3.5 h-3.5" />
+                        <span className="text-xs font-medium truncate max-w-[200px]">
+                          {path.map((p, i) => (
+                            <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-0.5">›</span>}{p.name}</span>
+                          ))}
+                        </span>
+                      </button>
+                      <span className="text-gray-300 shrink-0">/</span>
+                    </>
+                  );
+                })()}
+                <Bot className="w-4 h-4 text-blue-600 shrink-0" />
+                <span className="truncate">{activeSessionDetail.name || 'Conversación'}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {!isWorkspaceSidebarOpen && (
+                  <button onClick={() => setIsWorkspaceSidebarOpen(true)} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500 transition flex items-center gap-2" title="Bóveda">
+                    <span className="text-xs font-semibold hidden sm:inline-block">Bóveda</span>
+                    <Folder className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </header>
+            <ChatArea session={activeSessionDetail} onUpdate={handleUpdate} onToggleFiles={() => setIsWorkspaceSidebarOpen(true)} />
+          </div>
         </main>
       ) : activeView === 'customize' ? (
         <CustomizePage onBack={() => setActiveView('home')} />
@@ -2981,8 +2983,8 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 bg-gray-50 flex flex-col items-center">
-        <div className="w-full max-w-3xl flex flex-col space-y-8">
+      <div className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 flex flex-col">
+        <div className="w-full flex flex-col space-y-8">
           
           {groupedTurns.length === 0 && !isActuallyRunning && (
              <div className="text-gray-400 text-sm text-center py-10">Envía un mensaje para comenzar la conversación.</div>
@@ -3171,7 +3173,7 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
       {/* Input Area */}
       <div className="bg-white border-t border-gray-200 px-2 pt-2 pb-4 sm:p-4 shrink-0 z-20">
         {isActuallyRunning ? (
-          <div className="max-w-3xl mx-auto flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-gray-50 border border-gray-200">
+          <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-gray-50 border border-gray-200">
             <div className="flex items-center gap-2 text-sm text-gray-600">
               <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
               <span>El agente está trabajando...</span>
