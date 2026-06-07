@@ -101,14 +101,11 @@ export default function App() {
 
   useEffect(() => {
     loadSpaces();
-    loadSessions(); // all sessions for historial
+    loadSessions(); // Carga TODAS las sesiones (incluye las de cualquier espacio y huérfanas)
   }, []);
 
-  useEffect(() => {
-    if (activeSpaceId) {
-      loadSessions(activeSpaceId);
-    }
-  }, [activeSpaceId]);
+  // Nota: el sidebar debe mostrar TODAS las sesiones sin filtrar por activeSpaceId.
+  // Si filtras, el usuario pierde de vista sus otros chats cuando navega a un espacio.
 
   useEffect(() => {
     if (activeSessionId) {
@@ -2756,51 +2753,10 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
 
   const isRequestingStepRef = useRef(false);
 
-  // Disparar el step pendiente UNA vez al montar (o cuando cambia el id de la sesión)
-  // si hay un mensaje del usuario sin respuesta. Esto cubre el caso de abrir
-  // un chat existente que quedó con un user message sin respuesta (por ejemplo,
-  // si el navegador se cerró mientras el agente procesaba).
-  //
-  // NOTA: en el flujo normal (escribir mensaje en el chat), el step se dispara
-  // desde `sendMessage`. En los flujos de creación (WelcomeScreen y SpaceChatInput),
-  // se dispara desde el onSubmit. Este useEffect es solo red de seguridad.
-  useEffect(() => {
-    if (disablePolling) return;
-    if (isRequestingStepRef.current) return;
-    const sess = sessionRef.current;
-    if (!sess || !sess.id) return;
-    if (sess.status === 'running' || sess.status === 'waiting_human') return;
-    const messages = sess.messages || [];
-    let lastUserIdx = -1;
-    let lastAssistantIdx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user' && lastUserIdx === -1) lastUserIdx = i;
-      if (messages[i].role === 'assistant' && lastAssistantIdx === -1) lastAssistantIdx = i;
-      if (lastUserIdx !== -1 && lastAssistantIdx !== -1) break;
-    }
-    if (lastUserIdx <= lastAssistantIdx) return;
-    isRequestingStepRef.current = true;
-    setIsProcessingStep(true);
-    api.post(`/sessions/${sess.id}/step`)
-      .then((res) => {
-        if (res.data && res.data.status === 'running') {
-          isRequestingStepRef.current = false;
-        }
-      })
-      .catch((e: any) => {
-        isRequestingStepRef.current = false;
-        console.error("Pending step trigger failed:", e?.response?.data?.error || e?.message);
-      })
-      .finally(() => {
-        if (mountedRef.current) {
-          setIsProcessingStep(false);
-          onUpdateRef.current();
-        }
-      });
-  }, [session.id, disablePolling]);
-
-  // Polling ligero: solo sincroniza mensajes con el server. NO dispara steps
-  // (el trigger está aislado arriba para evitar races con el flujo del usuario).
+  // Polling ligero: sincroniza mensajes con el server. Si el agente está en
+  // 'running' (bucle de tools), dispara el siguiente step. El lock
+  // isRequestingStepRef evita que el polling y el sendMessage disparen
+  // steps concurrentes.
   useEffect(() => {
     if (disablePolling) return;
     let isMounted = true;
@@ -2814,8 +2770,6 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
       onUpdateRef.current();
 
       // 2) Si el server dice que está corriendo, continuar con el siguiente step
-      // (caso "agente en bucle de tools"). Esto es seguro porque respeta
-      // isRequestingStepRef.
       if (sess.status === 'running' && !isRequestingStepRef.current) {
         isRequestingStepRef.current = true;
         try {
@@ -3147,6 +3101,7 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
             variant="compact"
             onSubmit={(text, mode) => {
               isSubmittingRef.current = true;
+              isRequestingStepRef.current = true; // Lock ANTES del await para que el polling no se cuele
               setIsProcessingStep(true);
               setOptimisticMessage(text);
               const myGen = ++genRef.current;
@@ -3155,7 +3110,6 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
                   await api.post(`/sessions/${session.id}/message`, { content: text, metadata: { mode } });
                   await onUpdate();
                   setOptimisticMessage('');
-                  isRequestingStepRef.current = true;
                   api.post(`/sessions/${session.id}/step`)
                     .catch((e: any) => alert('Error in step: ' + (e.response?.data?.error || e.message)))
                     .finally(() => {
@@ -3170,7 +3124,10 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
                     });
                   setTimeout(() => { if (mountedRef.current) onUpdate(); }, 500);
                 } catch (e: any) {
-                  if (mountedRef.current) setIsProcessingStep(false);
+                  if (mountedRef.current) {
+                    setIsProcessingStep(false);
+                    isRequestingStepRef.current = false;
+                  }
                   isSubmittingRef.current = false;
                   alert('Error sending message: ' + (e.response?.data?.error || e.message));
                 }
