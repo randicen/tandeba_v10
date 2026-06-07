@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MoreVertical, Edit2, Archive, ArchiveRestore, Trash2 } from 'lucide-react';
+import { MoreVertical, Edit2, Trash2, Search } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export interface HistorySession {
@@ -16,10 +16,7 @@ interface ChatHistoryListProps {
   activeSessionId: string | null;
   onSelect: (sessionId: string, spaceId: string | null) => void;
   onRename: (sessionId: string, newName: string) => Promise<void> | void;
-  onArchive: (sessionId: string, archived: boolean) => Promise<void> | void;
   onDelete: (sessionId: string) => Promise<void> | void;
-  showArchived: boolean;
-  onToggleShowArchived: () => void;
 }
 
 /**
@@ -58,36 +55,38 @@ export function ChatHistoryList({
   activeSessionId,
   onSelect,
   onRename,
-  onArchive,
   onDelete,
-  showArchived,
-  onToggleShowArchived,
 }: ChatHistoryListProps) {
-  const groups = groupByDate(sessions);
-  const hasAny = sessions.length > 0;
+  const [query, setQuery] = useState('');
+
+  const filtered = query.trim()
+    ? sessions.filter((s) => (s.name || '').toLowerCase().includes(query.toLowerCase()))
+    : sessions;
+
+  const groups = groupByDate(filtered);
+  const hasAny = filtered.length > 0;
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2 px-1">
-        <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
-          Historial
-        </div>
-        <button
-          onClick={onToggleShowArchived}
-          title={showArchived ? 'Ocultar archivados' : 'Mostrar archivados'}
-          className={cn(
-            'text-[10px] px-2 py-0.5 rounded-md transition-colors',
-            showArchived
-              ? 'bg-gray-800 text-white hover:bg-gray-700'
-              : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-          )}
-        >
-          {showArchived ? 'Ocultar archivados' : 'Ver archivados'}
-        </button>
+    <div className="space-y-1">
+      <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1 px-2">
+        Chats
+      </div>
+
+      <div className="relative mb-2">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Buscar en tus chats..."
+          className="w-full pl-8 pr-3 py-1.5 text-[13px] bg-gray-100/60 border border-transparent rounded-lg focus:outline-none focus:bg-white focus:border-gray-200 focus:ring-2 focus:ring-blue-500/10 placeholder:text-gray-400 transition-colors"
+        />
       </div>
 
       {!hasAny && (
-        <p className="text-[11px] text-gray-400 px-3 py-1">Sin historial</p>
+        <p className="text-[12px] text-gray-400 px-3 py-2">
+          {query ? 'Sin resultados' : 'Sin chats aún'}
+        </p>
       )}
 
       <div className="space-y-3">
@@ -104,7 +103,6 @@ export function ChatHistoryList({
                   isActive={activeSessionId === s.id}
                   onSelect={() => onSelect(s.id, s.spaceId ?? null)}
                   onRename={onRename}
-                  onArchive={onArchive}
                   onDelete={onDelete}
                 />
               ))}
@@ -121,11 +119,10 @@ interface ChatHistoryItemProps {
   isActive: boolean;
   onSelect: () => void;
   onRename: ChatHistoryListProps['onRename'];
-  onArchive: ChatHistoryListProps['onArchive'];
   onDelete: ChatHistoryListProps['onDelete'];
 }
 
-function ChatHistoryItem({ session, isActive, onSelect, onRename, onArchive, onDelete }: ChatHistoryItemProps) {
+function ChatHistoryItem({ session, isActive, onSelect, onRename, onDelete }: ChatHistoryItemProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(session.name || '');
@@ -217,31 +214,14 @@ function ChatHistoryItem({ session, isActive, onSelect, onRename, onArchive, onD
         >
           <button
             onClick={() => { setMenuOpen(false); setRenaming(true); }}
-            className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center gap-2.5"
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 flex items-center gap-2.5"
           >
             <Edit2 className="w-3.5 h-3.5 text-gray-500" />
             Renombrar
           </button>
           <button
-            onClick={() => { setMenuOpen(false); void onArchive(session.id, !session.archived); }}
-            className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center gap-2.5"
-          >
-            {session.archived ? (
-              <>
-                <ArchiveRestore className="w-3.5 h-3.5 text-gray-500" />
-                Desarchivar
-              </>
-            ) : (
-              <>
-                <Archive className="w-3.5 h-3.5 text-gray-500" />
-                Archivar
-              </>
-            )}
-          </button>
-          <div className="border-t border-gray-100 my-1" />
-          <button
             onClick={handleDelete}
-            className="w-full text-left px-3 py-2 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2.5"
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2.5"
           >
             <Trash2 className="w-3.5 h-3.5" />
             Eliminar

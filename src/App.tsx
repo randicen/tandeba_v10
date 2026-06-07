@@ -98,7 +98,6 @@ export default function App() {
   const [navMode, setNavMode] = useState<'chats' | 'spaces'>('chats');
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [activeView, setActiveView] = useState<'home' | 'computer' | 'vaults' | 'tools' | 'customize'>('home');
-  const [showArchivedInHistory, setShowArchivedInHistory] = useState(false);
 
   useEffect(() => {
     loadSpaces();
@@ -130,11 +129,7 @@ export default function App() {
     try {
       // `api` ya tiene baseURL `/api`, así que NO prefijo `/api/` al path
       // (antes había un doble `/api/api/` que daba 404 y vaciaba el sidebar).
-      const params = new URLSearchParams();
-      if (spaceId) params.set('spaceId', spaceId);
-      if (showArchivedInHistory) params.set('includeArchived', 'true');
-      const qs = params.toString();
-      const url = `/sessions${qs ? '?' + qs : ''}`;
+      const url = spaceId ? `/sessions?spaceId=${spaceId}` : '/sessions';
       const res = await api.get(url);
       if (Array.isArray(res.data)) {
         setSessions(res.data);
@@ -160,30 +155,6 @@ export default function App() {
     } catch (e: any) {
       console.error('Rename failed:', e);
       alert('No se pudo renombrar: ' + (e?.response?.data?.error || e?.message));
-    }
-  };
-
-  const handleArchiveSession = async (sessionId: string, archived: boolean) => {
-    try {
-      await api.put(`/sessions/${sessionId}/archive`, { archived });
-      if (archived) {
-        // Si es la activa, sacarla de la vista
-        if (activeSessionId === sessionId) {
-          setActiveSessionId(null);
-          setActiveSessionDetail(null);
-        }
-        // Quitar de la lista (o marcar como archivada si showArchived está activo)
-        if (!showArchivedInHistory) {
-          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-        } else {
-          setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, archived: true } : s));
-        }
-      } else {
-        setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, archived: false } : s));
-      }
-    } catch (e: any) {
-      console.error('Archive failed:', e);
-      alert('No se pudo archivar: ' + (e?.response?.data?.error || e?.message));
     }
   };
 
@@ -333,46 +304,36 @@ export default function App() {
             )}
           </div>
           
-          <nav className="space-y-1 mb-6">
+          <nav className="space-y-0.5 mb-4">
             <button onClick={() => { setNavMode('chats'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(null); setActiveView('home'); }} className={cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              navMode === 'chats' && activeView === 'home' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              "w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] transition-colors",
+              navMode === 'chats' && activeView === 'home' ? "bg-white text-gray-900 font-medium shadow-sm" : "text-gray-600 hover:bg-gray-100"
             )}>
               <Bot className="w-4 h-4 shrink-0" /> Chats
             </button>
             <button onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(null); setActiveView('home'); }} className={cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              navMode === 'spaces' && activeView === 'home' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              "w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] transition-colors",
+              navMode === 'spaces' && activeView === 'home' ? "bg-white text-gray-900 font-medium shadow-sm" : "text-gray-600 hover:bg-gray-100"
             )}>
               <Folder className="w-4 h-4 shrink-0" /> Espacios
             </button>
             <button onClick={() => setActiveView('vaults')} className={cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              activeView === 'vaults' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              "w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] transition-colors",
+              activeView === 'vaults' ? "bg-white text-gray-900 font-medium shadow-sm" : "text-gray-600 hover:bg-gray-100"
             )}>
               <Folder className="w-4 h-4 shrink-0 text-amber-500" /> Bóvedas
             </button>
             <button onClick={() => setActiveView('tools')} className={cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              activeView === 'tools' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              "w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] transition-colors",
+              activeView === 'tools' ? "bg-white text-gray-900 font-medium shadow-sm" : "text-gray-600 hover:bg-gray-100"
             )}>
               <Wrench className="w-4 h-4 shrink-0" /> Herramientas
             </button>
             <button onClick={() => setActiveView('customize')} className={cn(
-              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              activeView === 'customize' ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
+              "w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] transition-colors",
+              activeView === 'customize' ? "bg-white text-gray-900 font-medium shadow-sm" : "text-gray-600 hover:bg-gray-100"
             )}>
               <Settings className="w-4 h-4 shrink-0" /> Personalizar
-            </button>
-          </nav>
-
-          <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Bóvedas recientes</div>
-          <nav className="space-y-0.5 mb-6">
-            <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-600">
-              <Folder className="w-4 h-4 shrink-0 text-amber-500" /> Jurisprudencia
-            </button>
-            <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-white/60 text-gray-600">
-              <Folder className="w-4 h-4 shrink-0 text-amber-500" /> Contratos
             </button>
           </nav>
           
@@ -390,14 +351,7 @@ export default function App() {
                 }
               }}
               onRename={handleRenameSession}
-              onArchive={handleArchiveSession}
               onDelete={handleDeleteSession}
-              showArchived={showArchivedInHistory}
-              onToggleShowArchived={() => {
-                setShowArchivedInHistory((v) => !v);
-                // Recargar para incluir/excluir archivadas
-                setTimeout(() => loadSessions(), 0);
-              }}
             />
           </div>
         </div>
@@ -407,8 +361,8 @@ export default function App() {
       {activeSessionDetail ? (
         <main className="flex-1 flex flex-col min-w-0 bg-gray-100 relative z-10">
           <div className="flex-1 flex flex-col w-full max-w-3xl mx-auto bg-white shadow-sm">
-            <header className="flex items-center justify-between gap-3 p-3 border-b border-gray-200 bg-white shrink-0 z-20">
-              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 min-w-0 flex-1">
+            <header className="flex items-center justify-between gap-3 px-4 sm:px-6 py-2.5 border-b border-gray-100 bg-white shrink-0 z-20">
+              <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700 min-w-0 flex-1">
                 {activeSessionDetail?.spaceId && (() => {
                   const path: any[] = [];
                   let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
@@ -422,13 +376,13 @@ export default function App() {
                     <>
                       <button
                         onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
-                        className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors px-1.5 py-0.5 rounded hover:bg-blue-50 shrink-0"
+                        className="flex items-center gap-1 text-gray-500 hover:text-gray-900 transition-colors px-1.5 py-0.5 rounded shrink-0"
                         title="Volver al Espacio"
                       >
                         <Folder className="w-3.5 h-3.5" />
-                        <span className="text-xs font-medium truncate max-w-[200px]">
+                        <span className="truncate max-w-[260px]">
                           {path.map((p, i) => (
-                            <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-0.5">›</span>}{p.name}</span>
+                            <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-1">›</span>}{p.name}</span>
                           ))}
                         </span>
                       </button>
@@ -436,14 +390,16 @@ export default function App() {
                     </>
                   );
                 })()}
-                <Bot className="w-4 h-4 text-blue-600 shrink-0" />
-                <span className="truncate">{activeSessionDetail.name || 'Conversación'}</span>
+                <span className="truncate text-gray-900">{activeSessionDetail.name || 'Conversación'}</span>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1 shrink-0">
                 {!isWorkspaceSidebarOpen && (
-                  <button onClick={() => setIsWorkspaceSidebarOpen(true)} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500 transition flex items-center gap-2" title="Bóveda">
-                    <span className="text-xs font-semibold hidden sm:inline-block">Bóveda</span>
-                    <Folder className="w-4 h-4" />
+                  <button
+                    onClick={() => setIsWorkspaceSidebarOpen(true)}
+                    className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500 transition flex items-center gap-1.5"
+                    title="Bóveda"
+                  >
+                    <Folder className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
