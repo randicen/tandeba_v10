@@ -712,6 +712,11 @@ async function startServer() {
     }
   });
 
+  // Auditoría de runs del agente (Worgena)
+  // Lista runs, detalle, exportación, estadísticas agregadas.
+  const auditRouter = (await import("./src/audit/router.js")).default;
+  app.use("/api/audit", auditRouter);
+
   // Vite middlewware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

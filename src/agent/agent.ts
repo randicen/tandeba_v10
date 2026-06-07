@@ -519,7 +519,7 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
     const openaiMessages = await toOpenAIMessages(session.messages);
     console.log(`[AGENT] Calling OpenAI with ${openaiMessages.length} messages`);
     const apiStart = Date.now();
-    const response = await openai.chat.completions.create({
+    const response: any = await openai.chat.completions.create({
       model: "deepseek-v4-flash",
       messages: openaiMessages,
       tools: [
@@ -794,7 +794,11 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
           await addMessageDB(session, waitMsg);
           
           await updateSession(session);
-          await completeStepLog(sessionId, stepLog, apiDuration, promptTokens, completionTokens, totalTokens, toolCalls);
+          await completeStepLog(
+            sessionId, stepLog,
+            apiDuration, promptTokens, completionTokens, totalTokens, toolCalls,
+            openaiMessages, response
+          );
           return session; // Stop the loop for this turn
         } else if (tool_call?.function?.name) {
           // Execute standard tool
@@ -872,14 +876,22 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
       }
 
       await updateSession(session);
-      await completeStepLog(sessionId, stepLog, apiDuration, promptTokens, completionTokens, totalTokens, toolCalls);
+      await completeStepLog(
+        sessionId, stepLog,
+        apiDuration, promptTokens, completionTokens, totalTokens, toolCalls,
+        openaiMessages, response
+      );
       return session;
 
     } else {
       // Loop finished, no tools called
       session.status = "idle";
       await updateSession(session);
-      await completeStepLog(sessionId, stepLog, apiDuration, promptTokens, completionTokens, totalTokens, []);
+      await completeStepLog(
+        sessionId, stepLog,
+        apiDuration, promptTokens, completionTokens, totalTokens, [],
+        openaiMessages, response
+      );
       return session;
     }
   } catch (err: any) {

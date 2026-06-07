@@ -103,6 +103,51 @@ function initDB() {
         embedding TEXT,
         created_at BIGINT
       );
+
+      -- ============================================================================
+      -- Auditoría de runs del agente (Worgena)
+      -- ----------------------------------------------------------------------------
+      -- Cada fila en step_logs es una llamada al LLM. Cada fila en tool_calls es
+      -- una herramienta ejecutada durante ese step. prompt_sent y raw_response
+      -- guardan el JSON completo para análisis forense y tuning de workflows.
+      -- ============================================================================
+      CREATE TABLE IF NOT EXISTS step_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        step_number INTEGER NOT NULL,
+        start_time BIGINT NOT NULL,
+        end_time BIGINT,
+        duration_ms INTEGER,
+        model TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        error_message TEXT,
+        messages_count INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        api_call_duration_ms INTEGER,
+        prompt_sent TEXT,
+        raw_response TEXT,
+        created_at BIGINT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        step_log_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        args TEXT,
+        duration_ms INTEGER,
+        success INTEGER NOT NULL DEFAULT 1,
+        result_preview TEXT,
+        FOREIGN KEY (step_log_id) REFERENCES step_logs(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS step_logs_session_id_idx ON step_logs(session_id, start_time);
+      CREATE INDEX IF NOT EXISTS step_logs_status_idx ON step_logs(status, start_time);
+      CREATE INDEX IF NOT EXISTS step_logs_created_at_idx ON step_logs(created_at);
+      CREATE INDEX IF NOT EXISTS tool_calls_step_log_id_idx ON tool_calls(step_log_id);
+      CREATE INDEX IF NOT EXISTS tool_calls_name_idx ON tool_calls(name);
     `);
 
     // Migraciones seguras (JS, no SQL): agregan columnas si la tabla ya existía
