@@ -60,7 +60,8 @@ function initDB() {
         status TEXT,
         space_id TEXT,
         created_at BIGINT,
-        updated_at BIGINT
+        updated_at BIGINT,
+        archived INTEGER DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS spaces (
@@ -152,6 +153,16 @@ function initDB() {
 
     // Migraciones seguras (JS, no SQL): agregan columnas si la tabla ya existía
     const spaceColumns = db.prepare("PRAGMA table_info(spaces)").all() as any[];
+    const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as any[];
+    if (!sessionColumns.some((c: any) => c.name === 'archived')) {
+      try {
+        db.exec('ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0');
+        db.exec('CREATE INDEX IF NOT EXISTS sessions_archived_idx ON sessions(archived)');
+        console.log('Migration: added archived column to sessions');
+      } catch (e: any) {
+        console.error('Migration sessions.archived failed:', e.message);
+      }
+    }
     if (!spaceColumns.some((c: any) => c.name === 'parent_id')) {
       try {
         db.exec('ALTER TABLE spaces ADD COLUMN parent_id TEXT');

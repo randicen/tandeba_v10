@@ -195,6 +195,27 @@ export async function getSession(id: string): Promise<AgentSession | undefined> 
   return session;
 }
 
+/** Renombra una sesión (no afecta mensajes ni steps). */
+export async function renameSession(id: string, name: string): Promise<void> {
+  await pool.query(
+    'UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?',
+    [name, Date.now(), id]
+  );
+}
+
+/** Archiva o desarchiva una sesión. Las archivadas no aparecen en el historial por default. */
+export async function archiveSession(id: string, archived: boolean): Promise<void> {
+  await pool.query(
+    'UPDATE sessions SET archived = ?, updated_at = ? WHERE id = ?',
+    [archived ? 1 : 0, Date.now(), id]
+  );
+}
+
+/** Elimina una sesión y todo lo asociado (messages, step_logs, tool_calls via FK). */
+export async function deleteSession(id: string): Promise<void> {
+  await pool.query('DELETE FROM sessions WHERE id = ?', [id]);
+}
+
 export async function getSessionDelta(id: string, clientMsgCount: number): Promise<Partial<AgentSession> | undefined> {
   const { rows: sessionRows } = await pool.query('SELECT status, space_id, updated_at FROM sessions WHERE id = $1', [id]);
   const data = sessionRows[0];
@@ -236,22 +257,30 @@ export async function getSessionDelta(id: string, clientMsgCount: number): Promi
   } as any;
 }
 
-export async function getSessions(spaceId?: string): Promise<Array<Omit<AgentSession, 'messages'> & { spaceId?: string }>> {
-  let query = 'SELECT id, name, status, space_id, created_at, updated_at FROM sessions';
-  const params: string[] = [];
+export async function getSessions(spaceId?: string, includeArchived = false): Promise<Array<Omit<AgentSession, 'messages'> & { spaceId?: string; archived?: boolean }>> {
+  let query = 'SELECT id, name, status, space_id, created_at, updated_at, COALESCE(archived, 0) as archived FROM sessions';
+  const params: any[] = [];
+  const conditions: string[] = [];
   if (spaceId) {
-    query += ' WHERE space_id = $1';
+    conditions.push('space_id = ?');
     params.push(spaceId);
+  }
+  if (!includeArchived) {
+    conditions.push('(archived IS NULL OR archived = 0)');
+  }
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
   }
   query += ' ORDER BY updated_at DESC LIMIT 50';
   const { rows: data } = await pool.query(query, params);
   if (!data) return [];
   
-  return data.map((d: any) => ({
+  return (data as any[]).map((d) => ({
     id: d.id,
     name: d.name,
     status: d.status,
     spaceId: d.space_id || undefined,
+    archived: Number(d.archived || 0) === 1,
     createdAt: typeof d.created_at === 'string' ? parseInt(d.created_at, 10) : Number(d.created_at),
     updatedAt: typeof d.updated_at === 'string' ? parseInt(d.updated_at, 10) : Number(d.updated_at)
   }));

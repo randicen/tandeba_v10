@@ -462,7 +462,8 @@ async function startServer() {
   app.get("/api/sessions", async (req, res) => {
     try {
       const spaceId = req.query.spaceId as string | undefined;
-      res.json(await getSessions(spaceId || undefined));
+      const includeArchived = req.query.includeArchived === 'true' || req.query.includeArchived === '1';
+      res.json(await getSessions(spaceId || undefined, includeArchived));
     } catch(e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -652,6 +653,40 @@ async function startServer() {
 
       res.json({ status: "ok" });
     } catch(e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put("/api/sessions/:id", async (req, res) => {
+    try {
+      const { renameSession } = await import("./src/agent/agent.js");
+      const name = (req.body?.name || '').toString().trim();
+      if (!name) return res.status(400).json({ error: "El nombre no puede estar vacío" });
+      if (name.length > 200) return res.status(400).json({ error: "Nombre demasiado largo" });
+      await renameSession(req.params.id, name);
+      res.json({ status: "ok", name });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put("/api/sessions/:id/archive", async (req, res) => {
+    try {
+      const { archiveSession } = await import("./src/agent/agent.js");
+      const archived = req.body?.archived === true;
+      await archiveSession(req.params.id, archived);
+      res.json({ status: "ok", archived });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/sessions/:id", async (req, res) => {
+    try {
+      const { deleteSession } = await import("./src/agent/agent.js");
+      await deleteSession(req.params.id);
+      res.json({ status: "ok" });
+    } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });

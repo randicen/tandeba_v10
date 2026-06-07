@@ -22,6 +22,7 @@ import CustomizePage from './components/CustomizePage';
 import VaultsView from './components/VaultsView';
 import { SpacesMainView } from './components/SpacesMainView';
 import { PromptComposer } from './components/PromptComposer';
+import { ChatHistoryList } from './components/ChatHistoryList';
 
 // API Client
 const api = axios.create({ baseURL: '/api' });
@@ -97,6 +98,7 @@ export default function App() {
   const [navMode, setNavMode] = useState<'chats' | 'spaces'>('chats');
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [activeView, setActiveView] = useState<'home' | 'computer' | 'vaults' | 'tools' | 'customize'>('home');
+  const [showArchivedInHistory, setShowArchivedInHistory] = useState(false);
 
   useEffect(() => {
     loadSpaces();
@@ -128,7 +130,11 @@ export default function App() {
     try {
       // `api` ya tiene baseURL `/api`, así que NO prefijo `/api/` al path
       // (antes había un doble `/api/api/` que daba 404 y vaciaba el sidebar).
-      const url = spaceId ? `/sessions?spaceId=${spaceId}` : '/sessions';
+      const params = new URLSearchParams();
+      if (spaceId) params.set('spaceId', spaceId);
+      if (showArchivedInHistory) params.set('includeArchived', 'true');
+      const qs = params.toString();
+      const url = `/sessions${qs ? '?' + qs : ''}`;
       const res = await api.get(url);
       if (Array.isArray(res.data)) {
         setSessions(res.data);
@@ -140,6 +146,58 @@ export default function App() {
     } catch (e: any) {
       console.error("Failed to load sessions");
       setCriticalError(e.response?.data?.error || e.message || "Error al cargar las sesiones. Revisa la consola o configuración de Base de Datos.");
+    }
+  };
+
+  const handleRenameSession = async (sessionId: string, newName: string) => {
+    try {
+      await api.put(`/sessions/${sessionId}`, { name: newName });
+      setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, name: newName } : s));
+      // Si es la activa, también refrescar el detail
+      if (activeSessionId === sessionId) {
+        setActiveSessionDetail((prev) => prev ? { ...prev, name: newName } : prev);
+      }
+    } catch (e: any) {
+      console.error('Rename failed:', e);
+      alert('No se pudo renombrar: ' + (e?.response?.data?.error || e?.message));
+    }
+  };
+
+  const handleArchiveSession = async (sessionId: string, archived: boolean) => {
+    try {
+      await api.put(`/sessions/${sessionId}/archive`, { archived });
+      if (archived) {
+        // Si es la activa, sacarla de la vista
+        if (activeSessionId === sessionId) {
+          setActiveSessionId(null);
+          setActiveSessionDetail(null);
+        }
+        // Quitar de la lista (o marcar como archivada si showArchived está activo)
+        if (!showArchivedInHistory) {
+          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        } else {
+          setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, archived: true } : s));
+        }
+      } else {
+        setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, archived: false } : s));
+      }
+    } catch (e: any) {
+      console.error('Archive failed:', e);
+      alert('No se pudo archivar: ' + (e?.response?.data?.error || e?.message));
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      await api.delete(`/sessions/${sessionId}`);
+      if (activeSessionId === sessionId) {
+        setActiveSessionId(null);
+        setActiveSessionDetail(null);
+      }
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    } catch (e: any) {
+      console.error('Delete failed:', e);
+      alert('No se pudo eliminar: ' + (e?.response?.data?.error || e?.message));
     }
   };
 
@@ -318,20 +376,30 @@ export default function App() {
             </button>
           </nav>
           
-          <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Historial</div>
-          <nav className="space-y-0.5">
-            {sessions.slice(0, 10).map((s: any) => (
-              <button key={s.id} onClick={() => { setActiveSessionId(s.id); if (s.spaceId) { setActiveSpaceId(s.spaceId); setNavMode('spaces'); } else { setNavMode('chats'); } }} className={cn(
-                "w-full text-left block rounded-lg px-3 py-2 text-sm transition-colors",
-                activeSessionId === s.id ? "bg-white border border-gray-200 shadow-sm text-gray-900 font-medium" : "hover:bg-white/60 text-gray-600"
-              )}>
-                <span className="truncate block">{s.name || 'Chat'}</span>
-              </button>
-            ))}
-            {sessions.length === 0 && (
-              <p className="text-[11px] text-gray-400 px-3 py-1">Sin historial</p>
-            )}
-          </nav>
+          <div className="flex-1 overflow-y-auto">
+            <ChatHistoryList
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSelect={(sid, spaceId) => {
+                setActiveSessionId(sid);
+                if (spaceId) {
+                  setActiveSpaceId(spaceId);
+                  setNavMode('spaces');
+                } else {
+                  setNavMode('chats');
+                }
+              }}
+              onRename={handleRenameSession}
+              onArchive={handleArchiveSession}
+              onDelete={handleDeleteSession}
+              showArchived={showArchivedInHistory}
+              onToggleShowArchived={() => {
+                setShowArchivedInHistory((v) => !v);
+                // Recargar para incluir/excluir archivadas
+                setTimeout(() => loadSessions(), 0);
+              }}
+            />
+          </div>
         </div>
       </aside>
 
