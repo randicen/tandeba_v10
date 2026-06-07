@@ -359,8 +359,8 @@ export default function App() {
 
       {/* Main Content */}
       {activeSessionDetail ? (
-        <main className="flex-1 flex flex-col min-w-0 bg-gray-100 relative z-10">
-          <div className="flex-1 flex flex-col w-full max-w-3xl mx-auto bg-white shadow-sm">
+        <main className="flex-1 flex flex-col min-w-0 bg-white relative z-10">
+          <div className="flex-1 flex flex-col w-full max-w-3xl mx-auto">
             <header className="flex items-center justify-between gap-3 px-4 sm:px-6 py-2.5 border-b border-gray-100 bg-white shrink-0 z-20">
               <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700 min-w-0 flex-1">
                 {activeSessionDetail?.spaceId && (() => {
@@ -2939,8 +2939,8 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 flex flex-col">
-        <div className="w-full flex flex-col space-y-8">
+      <div className="flex-1 overflow-y-auto flex flex-col">
+        <div className="w-full max-w-3xl mx-auto px-4 sm:px-6 py-8 flex flex-col space-y-8">
           
           {groupedTurns.length === 0 && !isActuallyRunning && (
              <div className="text-gray-400 text-sm text-center py-10">Envía un mensaje para comenzar la conversación.</div>
