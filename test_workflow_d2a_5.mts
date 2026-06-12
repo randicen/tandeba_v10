@@ -51,6 +51,13 @@ import type {
   TaskError,
   NodeResult,
 } from "./src/agent/workflow-engine/executor/index.js";
+import {
+  DefaultTierResolver,
+  IntakeSpecialist,
+  ClauseReviewerSpecialist,
+  VerifierSpecialist,
+  SpecialistRegistry,
+} from "./src/agent/specialists/index.js";
 import assert from "node:assert/strict";
 
 // ============================================================
@@ -180,12 +187,33 @@ function setupRevisionGenerica(overrides: Partial<{ hitl: RevisionGenericaHITL; 
   ) as WorkflowDefinition;
   const llm = overrides.llm ?? new RevisionGenericaLLM();
   const hitl = overrides.hitl ?? new RevisionGenericaHITL();
+
+  // D2b.1: el fixture declara `assignedSpecialist: "intake_specialist_v1"`
+  // en el nodo `classify` (los demás nodos LLM siguen sin specialist
+  // porque los specialists de D2b.1 no encajan con extract/summarize
+  // del fixture — `clause_reviewer_specialist_v1` espera `{clauseId, risk, reason}`
+  // y el mock de extract retorna `{id, text}`). El test D2a.5 sigue
+  // funcionando porque proveemos un `SpecialistRegistry` con un
+  // `IntakeSpecialist` cuyo invocador es el MISMO `RevisionGenericaLLM`
+  // (en lugar del `MockDeepSeekFlashInvoker` por default). Así, el mock
+  // del test sigue detectando el nodo por substring del system prompt.
+  const tierResolver = new DefaultTierResolver(llm, llm); // ambos invocadores apuntan al mock del test.
+  const specialistRegistry = SpecialistRegistry.create({
+    tierResolver,
+    factories: [
+      { agentId: "intake_specialist_v1", factory: (inv) => new IntakeSpecialist(inv) },
+      { agentId: "clause_reviewer_specialist_v1", factory: (inv) => new ClauseReviewerSpecialist(inv) },
+      { agentId: "verifier_specialist_v1", factory: (inv) => new VerifierSpecialist(inv) },
+    ],
+  });
+
   const executor = new WorkflowExecutor({
     functionRegistry: new FunctionRegistry() as unknown as Map<string, WorkflowFunction>,
     llmInvoker: llm,
     hitlHandler: hitl,
-    // Forzamos el circuit breaker para verificar que se consulta.
     circuitBreaker: new NoopCircuitBreaker(),
+    tierResolver,
+    specialistRegistry,
   });
   return { workflow, executor, llm, hitl };
 }

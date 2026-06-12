@@ -167,6 +167,10 @@ const llmNodeSchema = {
     output: nodeOutputSchema,
     outputSchema: { type: "object" },
     confidenceGating: confidenceGatingConfigSchema,
+    // D2b.1: agentId del specialist que ejecuta este nodo. Opcional.
+    // Si está, el motor delega al SpecialistRegistry; si no, usa llmInvoker
+    // default (D2a.4 behavior). Validación de existencia se hace en startTask.
+    assignedSpecialist: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
 } as const;

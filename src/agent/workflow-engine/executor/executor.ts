@@ -200,6 +200,35 @@ export class WorkflowExecutor {
       );
     }
 
+    // D2b.1: validar que cada `node.assignedSpecialist` (si está declarado)
+    // exista en el `SpecialistRegistry`. Falla fast al cargar el workflow
+    // con `NODE_NOT_FOUND`. Ver `AGENT_D2B_1_SPEC.md` §3.11.
+    if (this.config.specialistRegistry) {
+      for (const n of workflow.nodes) {
+        if (n.type === "llm" && n.assignedSpecialist) {
+          const agentId = n.assignedSpecialist;
+          if (!this.config.specialistRegistry.get(agentId)) {
+            throw new ExecutorError(
+              `Nodo "${n.id}" declara assignedSpecialist="${agentId}" pero el SpecialistRegistry no tiene ese agentId. Registrá el specialist en el ExecutorConfig.`,
+              "NODE_NOT_FOUND",
+              { workflowId: workflow.id, nodeId: n.id, agentId },
+            );
+          }
+        }
+      }
+    } else {
+      // Sin registry, ningún nodo puede tener `assignedSpecialist` declarado.
+      for (const n of workflow.nodes) {
+        if (n.type === "llm" && n.assignedSpecialist) {
+          throw new ExecutorError(
+            `Nodo "${n.id}" declara assignedSpecialist="${n.assignedSpecialist}" pero el ExecutorConfig no tiene specialistRegistry configurado. Proveé uno o quitá el assignedSpecialist del nodo.`,
+            "NODE_NOT_FOUND",
+            { workflowId: workflow.id, nodeId: n.id, agentId: n.assignedSpecialist },
+          );
+        }
+      }
+    }
+
     // Migración lazy: si el workflow tiene schemaVersion menor al del motor,
     // aplicar los migradores del registry. El resultado se persiste con la task.
     const { workflow: effectiveWorkflow, appliedMigrations } = this.loadAndMigrate(workflow);
@@ -1074,10 +1103,25 @@ export class WorkflowExecutor {
       }
 
       // 4. Success: persistir resultado, escribir al state, validar state.
+      // D2b.1: si el nodo LLM tiene `assignedSpecialist`, calcular
+      // `executedBy` (agentId, agentVersion, tier, model) para el audit.
+      let executedBy: { agentId: string; agentVersion: string; tier: string; model: string } | undefined;
+      if (node.type === "llm" && node.assignedSpecialist && this.config.specialistRegistry) {
+        const specialist = this.config.specialistRegistry.get(node.assignedSpecialist);
+        if (specialist) {
+          const tier = outcome.modelUsed ?? node.model;
+          executedBy = {
+            agentId: specialist.agentId,
+            agentVersion: specialist.agentVersion,
+            tier,
+            model: outcome.modelUsed ?? tier,
+          };
+        }
+      }
       this.recordNodeResult(
         task,
         node,
-        this.makeSuccessResult(node.id, outcome),
+        this.makeSuccessResult(node.id, outcome, executedBy),
       );
       this.writeOutputToState(task, node, outcome.output);
 
@@ -1291,6 +1335,8 @@ export class WorkflowExecutor {
           logger: this.log,
           circuitBreaker: this.circuitBreaker,
           specialistId,
+          specialistRegistry: this.config.specialistRegistry,
+          tierResolver: this.config.tierResolver,
         });
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -1472,8 +1518,20 @@ export class WorkflowExecutor {
       retryCount: number;
       promptSnapshot?: PromptSnapshot;
     },
+    /**
+     * D2b.1: metadata opcional. Si está presente, se setea
+     * `NodeResult.metadata.executedBy` con agentId, agentVersion, tier y
+     * model. Solo se popula para nodos LLM con `assignedSpecialist`
+     * (información de quién ejecutó el nodo para audit/cost attribution).
+     */
+    executedBy?: {
+      readonly agentId: string;
+      readonly agentVersion: string;
+      readonly tier: string;
+      readonly model: string;
+    },
   ): NodeResult {
-    return {
+    const base: NodeResult = {
       nodeId,
       status: "completed",
       startedAt: new Date().toISOString(),
@@ -1487,6 +1545,10 @@ export class WorkflowExecutor {
       retryCount: outcome.retryCount,
       promptSnapshot: outcome.promptSnapshot,
     };
+    if (executedBy) {
+      (base as { metadata?: unknown }).metadata = { executedBy };
+    }
+    return base;
   }
 
   private makeFailedResult(

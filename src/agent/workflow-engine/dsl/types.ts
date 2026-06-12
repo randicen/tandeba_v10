@@ -191,6 +191,17 @@ export interface LLMNode extends BaseNode {
   readonly outputSchema?: JSONSchema;
 
   readonly confidenceGating?: ConfidenceGatingConfig;
+
+  /**
+   * D2b.1: agentId del specialist que ejecuta este nodo (si está configurado
+   * en el `SpecialistRegistry` del ExecutorConfig). Si está presente, el
+   * node-runner delega la ejecución al specialist en vez de invocar al
+   * `llmInvoker` default. Si está ausente, comportamiento D2a.4 (invoke directo).
+   *
+   * Validación: si el agentId no existe en el registry, `startTask` falla
+   * con `ExecutorError` código `NODE_NOT_FOUND`. Ver `AGENT_D2B_1_SPEC.md` §3.11.
+   */
+  readonly assignedSpecialist?: string;
 }
 
 /** Tier (referencia simbólica) o nombre específico de modelo. */
@@ -527,6 +538,23 @@ export interface NodeResult {
 
   /** Idempotency key resuelta (si el nodo declaró `idempotencyKey`). */
   idempotencyKey?: string;
+
+  /**
+   * D2b.1: metadata opcional. Hoy solo se usa para `executedBy` (qué
+   * specialist ejecutó este nodo). En D2b.2 puede extenderse con más
+   * campos (lifecycle, timing, etc.).
+   *
+   * Backward-compat: campo opcional. Tests existentes (D2a.4, D2a.5) no
+   * lo setean, así que siguen pasando.
+   */
+  metadata?: {
+    readonly executedBy?: {
+      readonly agentId: string;
+      readonly agentVersion: string;
+      readonly tier: string;
+      readonly model: string;
+    };
+  };
 
   error?: NodeError;
 }

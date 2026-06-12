@@ -41,6 +41,9 @@ import type {
   NodeExecutionSuccess,
   WorkflowFunction,
 } from "./types.js";
+import type { SpecialistRegistry } from "../../specialists/specialist-registry.js";
+import type { TierResolver } from "../../specialists/tier-resolver.js";
+import { SPECIALIST_AGENT_VERSION } from "../../specialists/specialist.js";
 import Ajv from "ajv";
 
 // ============================================================
@@ -77,6 +80,19 @@ export interface RunNodeParams {
    * `recordFailure` con este ID después de la invocación.
    */
   readonly specialistId?: string;
+  /**
+   * D2b.1: registry de specialists. Si el nodo LLM tiene `assignedSpecialist`
+   * y el agentId existe en el registry, el node-runner delega al specialist
+   * en lugar de invocar al `llmInvoker` default. Si no, comportamiento D2a.4.
+   */
+  readonly specialistRegistry?: SpecialistRegistry;
+  /**
+   * D2b.1: TierResolver. Si está provisto y el nodo LLM NO tiene
+   * `assignedSpecialist` (o el specialist no existe), se usa el invocador
+   * que el resolver retorna para el `node.model` del nodo. Si está ausente,
+   * se usa el `llmInvoker` default (D2a.4).
+   */
+  readonly tierResolver?: TierResolver;
 }
 
 /**
@@ -178,9 +194,77 @@ async function runLLMNode(
   params: RunNodeParams,
   startedAt: string,
 ): Promise<NodeExecutionOutcome> {
-  const { task, llmInvoker, logger, signal, circuitBreaker, specialistId } = params;
+  const { task, llmInvoker, logger, signal, circuitBreaker, specialistId, specialistRegistry, tierResolver } = params;
   const state = task.state as Record<string, unknown>;
   const breaker = circuitBreaker ?? new NoopCircuitBreaker();
+
+  // D2b.1: routing al specialist. Si el nodo tiene `assignedSpecialist` y
+  // existe en el registry, delegamos TODO al specialist (system + user
+  // prompt + output validation + confidence gating). El specialist retorna
+  // un `NodeExecutionOutcome` completo. Ver `AGENT_D2B_1_SPEC.md` §3.4, §3.15.
+  if (node.assignedSpecialist && specialistRegistry) {
+    const specialist = specialistRegistry.get(node.assignedSpecialist);
+    if (specialist) {
+      logger?.debug(`llm node ${node.id} delegating to specialist ${specialist.agentId}`, {
+        nodeId: node.id,
+        specialistId: specialist.agentId,
+        specialistVersion: specialist.agentVersion ?? SPECIALIST_AGENT_VERSION,
+      });
+
+      let outcome: NodeExecutionOutcome;
+      try {
+        outcome = await specialist.execute({ node, task, state, signal });
+      } catch (e) {
+        if (specialistId) breaker.recordFailure(specialistId);
+        if ((e as { name?: string }).name === "AbortError") {
+          return failure({
+            code: "INTERNAL_ERROR",
+            message: `Specialist call cancelled.`,
+            retriable: false,
+            startedAt,
+          });
+        }
+        const err = toNodeRuntimeError(e, classifyLLMError(e));
+        return failure({
+          code: err.code,
+          message: err.message,
+          retriable: isRetriableByDefault(err.code),
+          stack: err.stack,
+          startedAt,
+        });
+      }
+
+      // Reportar al circuit breaker.
+      if (specialistId) {
+        if (outcome.status === "completed") breaker.recordSuccess(specialistId);
+        else breaker.recordFailure(specialistId);
+      }
+
+      // Si el specialist devolvió confidence LOW y onLow='fail', falla
+      // el nodo. Mismo patrón que D2a.4.
+      if (
+        outcome.status === "completed" &&
+        node.confidenceGating &&
+        node.confidenceGating.onLow === "fail" &&
+        outcome.confidence === "LOW"
+      ) {
+        return failure({
+          code: "INVALID_OUTPUT",
+          message: `LLM node "${node.id}" confidence LOW (${outcome.confidenceValue}) — onLow='fail' en el workflow.`,
+          retriable: false,
+          startedAt,
+        });
+      }
+
+      return outcome;
+    }
+    // El agentId no existe en el registry. Esto NO debería pasar porque
+    // `startTask` valida, pero por defensa: si llegamos acá con un
+    // specialistId declarado y sin match, caemos al flujo D2a.4.
+    // NO fallamos acá — el caller (startTask) ya falló si el agentId no
+    // existía. Si llegamos acá sin registry o con agentId ausente, es
+    // flujo normal.
+  }
 
   const input = resolveStateRef(state, node.input.from, node.input.default);
 
@@ -205,14 +289,23 @@ async function runLLMNode(
     tools: node.tools ? [...node.tools] : undefined,
   };
 
-  logger?.debug(`llm node ${node.id} invoking ${node.model}`, {
+  // D2b.1: TierResolver. Si está provisto, lo usamos para resolver el
+  // invocador concreto de `node.model`. Si no, usamos el `llmInvoker`
+  // default (D2a.4 behavior).
+  const resolved = tierResolver
+    ? tierResolver.resolve(node.model)
+    : { invoker: llmInvoker, tier: node.model, model: node.model };
+
+  logger?.debug(`llm node ${node.id} invoking ${resolved.model}`, {
     nodeId: node.id,
-    model: node.model,
+    model: resolved.model,
+    tier: resolved.tier,
+    viaSpecialist: false,
   });
 
   try {
-    const result = await llmInvoker.invoke({
-      model: node.model,
+    const result = await resolved.invoker.invoke({
+      model: resolved.model,
       systemPrompt,
       userPrompt,
       tools: node.tools,
@@ -261,7 +354,7 @@ async function runLLMNode(
       confidenceValue,
       tokensUsed: result.tokensUsed,
       costUsd: result.costUsd,
-      modelUsed: result.modelUsed,
+      modelUsed: result.modelUsed ?? resolved.model,
       retryCount: 0,
       startedAt,
       promptSnapshot,

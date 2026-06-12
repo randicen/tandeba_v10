@@ -27,6 +27,15 @@
 import type { CircuitBreaker } from "./circuit-breaker.js";
 import type { MigratorRegistry } from "../migrations.js";
 
+// D2b.1: tipos del multi-model router. Importamos SOLO tipos para evitar
+// ciclos de import en runtime (los specialists importan del motor, y el
+// motor importa solo tipos de specialists, que TypeScript borra en
+// compilación). Importar desde el barrel `../../specialists/index.js`
+// sería tentador pero causaría un ciclo (el barrel carga los specialists
+// concretos, que a su vez importan del motor).
+import type { TierResolver } from "../../specialists/tier-resolver.js";
+import type { SpecialistRegistry } from "../../specialists/specialist-registry.js";
+
 // ============================================================
 // Re-exports (para que el barrel index.ts siga funcionando)
 // ============================================================
@@ -254,6 +263,32 @@ export interface ExecutorConfig {
    * un `schemaVersion` mayor, falla con `SCHEMA_VERSION_UNSUPPORTED`.
    */
   readonly schemaVersion?: number;
+  /**
+   * D2b.1: TierResolver (multi-model router). Mapea `ModelRef` (tier o
+   * nombre) a un `LLMInvoker` concreto. Si está presente y un nodo LLM
+   * NO tiene `assignedSpecialist`, el node-runner usa el invocador que
+   * el resolver retorna para el `node.model` del nodo. Si está ausente,
+   * el node-runner usa el `llmInvoker` default (D2a.4 behavior).
+   *
+   * Backward-compat: opcional. Si no se provee, ningún cambio.
+   */
+  readonly tierResolver?: TierResolver;
+  /**
+   * D2b.1: registry de specialists. Si un nodo LLM tiene
+   * `assignedSpecialist: string`, el node-runner busca ese agentId
+   * en este registry y delega la ejecución al specialist. Si el
+   * nodo NO tiene `assignedSpecialist` o el agentId no existe, el
+   * comportamiento depende de `tierResolver` (ver arriba).
+   *
+   * Validación: la existencia del `assignedSpecialist` se chequea
+   * en `startTask` (falla con `NODE_NOT_FOUND` si no existe). Ver
+   * `AGENT_D2B_1_SPEC.md` §3.11.
+   *
+   * Backward-compat: opcional. Si no se provee, ningún cambio (los
+   * nodos con `assignedSpecialist` se ignoran? NO — falla en
+   * startTask porque no hay dónde rutear. La validación es eager).
+   */
+  readonly specialistRegistry?: SpecialistRegistry;
 }
 
 export interface ExecutorLogger {

@@ -49,6 +49,7 @@
       "type": "llm",
       "name": "Clasificar documento",
       "model": "liviano",
+      "assignedSpecialist": "intake_specialist_v1",
       "systemPrompt": "Sos un clasificador de documentos legales. Recibís el contenido de un documento y devolvés su categoría (contrato / demanda / sentencia / opinión / otro) y tu nivel de confianza entre 0 y 1 (0 = sin idea, 1 = absolutamente seguro).",
       "userPrompt": "{{state.input.documentContent}}",
       "input": { "from": { "template": "{{state.input.documentContent}}" } },
