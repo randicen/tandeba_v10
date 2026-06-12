@@ -11,19 +11,16 @@
 ## Estado al cierre de esta sesión
 
 **Fecha**: 2026-06-12
-**Sprint cerrado**: **D2a.5 — Workflow ejemplo end-to-end**. D2a cerrado completo.
-- Spec: `AGENT_D2A_5_SPEC.md` v1.0 (cerrada tras auditoría).
-- Implementación: 1 fixture JSON (`tests/fixtures/revision-generica.workflow.json`) + 1 test file (`test_workflow_d2a_5.mts`, 7 tests).
-- Tests: **114/114 pasan** en el motor (53 originales + 36 D2a.2.3 + 18 D2a.4 + **7 nuevos en `test_workflow_d2a_5.mts`**). Cero regresiones.
-- Sin cambios al motor (cerrado en D2a.4).
+**Sprint cerrado**: **D2b.1 — Multi-Model Router + 3 Specialists (con mocks)**. D2b.1 cerrado completo.
+- Spec: `AGENT_D2B_1_SPEC.md` v1.0 (cerrada tras auditoría, 18 decisiones registradas).
+- Implementación: 8 archivos nuevos en `src/agent/specialists/` (TierResolver, SpecialistRegistry, 3 specialists, 2 mocks, barrel) + 1 test file (`test_workflow_d2b_1.mts`, 16 tests).
+- Modificaciones mínimas al motor: `dsl/types.ts` (+`assignedSpecialist`, +`metadata.executedBy`), `dsl/schema.ts` (+`assignedSpecialist`), `executor/types.ts` (+TierResolver, +SpecialistRegistry en ExecutorConfig), `executor/node-runner.ts` (routing al specialist), `executor/executor.ts` (validación en startTask, setea metadata).
+- Fixture actualizado: `tests/fixtures/revision-generica.workflow.json` con `assignedSpecialist` en `classify`.
+- Tests: **130/130 pasan** (53 + 36 + 18 + 7 + **16 nuevos en `test_workflow_d2b_1.mts`**). Cero regresiones.
 
-**Sprint en curso**: **D2b.1 — Multi-Model Router + 3 Specialists (con mocks)**. Spec escrita y auditada.
-- Spec: `AGENT_D2B_1_SPEC.md` v1.0 (cerrada tras auditoría, ver §"Sprint en curso" abajo).
-- Implementación: pendiente (TierResolver, SpecialistRegistry, 3 specialists, mocks, modificaciones al node-runner).
+**Próximo sprint propuesto**: **D2b.2** — verifier en sub-sesión real + Agent Cards JSON tipo A2A + lifecycle `spawn→idle→busy→paused→done→archived` + integración real con OpenRouter + cost attribution con pricing real + Citation Grounding v2 (roadmap §5.13).
 
-**Próximo sprint propuesto**: **D2b.2** (después de D2b.1) — verifier en sub-sesión real + Agent Cards JSON tipo A2A + lifecycle formal + integración real con OpenRouter + cost attribution con pricing real.
-
-**D1 cerrada**, **D2a cerrado** (motor completo: primitivas de núcleo + HITL pause/resume + workflow ejemplo end-to-end). Pendiente: D2b (specialists en 2 sprints), D2c (skills v1), D3 (multi-tenant), D4 (memoria), D5 (RAG), D6 (editor).
+**D1 cerrada**, **D2a cerrado** (motor completo), **D2b.1 cerrado** (multi-modelo + 3 specialists con mocks). Pendiente: D2b.2 (specialists reales), D2c (skills v1), D3 (multi-tenant), D4 (memoria), D5 (RAG), D6 (editor).
 
 ---
 
@@ -90,42 +87,36 @@
 
 ---
 
-## Sprint en curso: D2b.1
+## Sprint recién cerrado: D2b.1
 
-**Qué cubre**: primer sprint de D2b (multi-modelo + specialists, roadmap §6.2). Introduce el `TierResolver` configurable (liviano + robusto) y los 3 specialists del roadmap (`IntakeSpecialist`, `ClauseReviewerSpecialist`, `VerifierSpecialist`) con mocks. Capa 3 del sistema agéntico (workflow engine es Capa 1).
+**Qué cubre**: primer sprint de D2b (multi-modelo + specialists, roadmap §6.2). Introduce el `TierResolver` configurable (liviano + robusto), los 3 specialists del roadmap (`IntakeSpecialist`, `ClauseReviewerSpecialist`, `VerifierSpecialist`) con mocks, y el routing por `node.assignedSpecialist`. Capa 3 del sistema agéntico (workflow engine es Capa 1).
 
-**Estado**: spec cerrada, implementación pendiente.
+**Componentes entregados**:
+- 8 archivos nuevos en `src/agent/specialists/`: `tier-resolver.ts`, `specialist.ts`, `specialist-registry.ts`, `intake-specialist.ts`, `clause-reviewer-specialist.ts`, `verifier-specialist.ts`, `mocks/mock-invokers.ts`, `index.ts` (barrel).
+- Modificaciones al motor (mínimas): `dsl/types.ts`, `dsl/schema.ts`, `executor/types.ts`, `executor/node-runner.ts`, `executor/executor.ts`, `executor/index.ts`. **El motor de D2a sigue funcionando tal cual** — los cambios son aditivos.
+- `tests/fixtures/revision-generica.workflow.json` actualizado con `assignedSpecialist` en `classify`.
+- `test_workflow_d2b_1.mts` con 16 tests (1 bonus sobre los 15 planeados).
 
-**Componentes a entregar**:
-- `src/agent/specialists/tier-resolver.ts` (nuevo) — interface + impl default.
-- `src/agent/specialists/specialist-registry.ts` (nuevo) — registry class.
-- `src/agent/specialists/{intake,clause-reviewer,verifier}-specialist.ts` (nuevos) — 3 specialists con prompts especializados.
-- `src/agent/specialists/mocks/mock-{deepseek-flash,m3-thinking}.ts` (nuevos) — invocadores mock.
-- `src/agent/workflow-engine/dsl/types.ts` — `+assignedSpecialist?` a LLMNode, `+metadata?` a NodeResult.
-- `src/agent/workflow-engine/executor/types.ts` — `+TierResolver`, `+Specialist`, `+SpecialistRegistry`, `+tierResolver?`, `+specialistRegistry?` a ExecutorConfig.
-- `src/agent/workflow-engine/executor/node-runner.ts` — routing al specialist si el nodo tiene `assignedSpecialist`.
-- `tests/fixtures/revision-generica.workflow.json` — `+assignedSpecialist` en cada nodo LLM.
-- `test_workflow_d2b_1.mts` (nuevo) — 15 tests.
+**Tests al cierre**: **130/130 pasan** (53 originales + 36 D2a.2.3 + 18 D2a.4 + 7 D2a.5 + 16 D2b.1). Cero regresiones.
 
-**Sin cambios al motor**: el `WorkflowExecutor` y el `runLoop` no se tocan (D2a cerrado). El routing ocurre en el `node-runner`.
+**Decisiones más opinadas (registradas en `AGENT_D2B_1_SPEC.md` §8, 18 decisiones)**:
+- D2b en 2 sprints cortos, no 1 ni 3. Balance control/velocidad.
+- Specialist hace TODA la lógica del nodo (system + user + output validation + confidence gating). Node-runner es pasivo. Razón: el specialist tiene el system prompt; el motor no sabe esas reglas.
+- Falla fast en `startTask` si `assignedSpecialist` no existe (validación al cargar, `NODE_NOT_FOUND`). No en runtime.
+- D2b.1 son mocks con prompts genéricos. Principios jurídicos (roadmap §5.14) entran en D2b.2 con skills v1 de D2c.
+- Circuit breaker sigue siendo por modelo en D2b.1 (D2a.4). Circuit breaker por specialist queda para D2b.2 con Agent Cards.
+- `assignedSpecialist` opcional en el LLMNode. Backward-compat: workflows sin el campo se ejecutan idéntico a D2a.4.
+- `tierResolver` opcional en ExecutorConfig. Sin él, el motor usa `llmInvoker` default (D2a.4).
+- `NodeResult.metadata.executedBy` opcional, se popula solo para nodos con specialist.
 
-**Tests planeados (15)**: tier resolution (3), specialist ejecuta nodo (3), workflow con `assignedSpecialist` (3), audit (2), error handling (1), backward-compat (3).
+**Lo que NO toca D2b.1** (deuda a D2b.2): integración real con OpenRouter, Agent Cards formales (JSON tipo A2A), lifecycle `spawn→idle→busy→paused→done→archived`, cost attribution con pricing real, verifier en sub-sesión aislada, Citation Grounding v2, MCP, principios jurídicos colombianos en prompts.
 
-**Conteo esperado al cierre**: 114 (motor) + 15 (D2b.1) = **129/129 tests pasan**. Cero regresiones.
-
-**Decisiones que tomé yo en este turno (registradas en spec §8, 18 decisiones)**: las 11 originales + 5 derivadas de la auditoría + 2 de la decisión de "2 sprints para D2b". Las más opinadas:
-- **D2b en 2 sprints, no 1 ni 3** (router+specialists ahora, verifier+cards+OpenRouter en D2b.2). Razón: balance control/velocidad.
-- **Specialist hace TODA la lógica del nodo** (system + user + output validation + confidence gating). Node-runner es pasivo. Razón: el specialist tiene el system prompt; el motor no sabe esas reglas.
-- **Falla fast en `startTask` si `assignedSpecialist` no existe** (validación al cargar, `NODE_NOT_FOUND`). No en runtime.
-- **D2b.1 son mocks con prompts genéricos**. Principios jurídicos (roadmap §5.14) entran en D2b.2 con skills v1 de D2c.
-
-**Correcciones aplicadas durante la auditoría del spec (commit `0dc6ec4`)**:
-- Conexión `TierResolver` → `Specialist` explícita: el `SpecialistRegistry` construye el specialist con el invoker resuelto.
-- 5 edge cases documentados: `assignedSpecialist` faltante, validación de `outputSchema`, retry, circuit breaker, confidence gating.
-- Carga de principios jurídicos como deuda para D2b.2.
-- Fixture `revision-generica.workflow.json` se actualiza UNA sola vez (no dos versiones).
-
-**Lo que NO toca D2b.1** (deuda a D2b.2): integración real con OpenRouter, Agent Cards formales (JSON tipo A2A), lifecycle `spawn→idle→busy→paused→done→archived`, cost attribution con pricing real, verifier en sub-sesión aislada, Citation Grounding v2, MCP, principios jurídicos en prompts.
+**Notas de implementación**:
+- El `Specialist` interface requiere un campo `agentVersion: string` (no se me ocurrió en la spec original, lo agregué durante la implementación para que el motor pueda poblar `metadata.executedBy` sin consultar el registry dos veces). El valor es `SPECIALIST_AGENT_VERSION = "1.0.0-d2b.1"`.
+- El `executor/types.ts` importa SOLO TIPOS de los specialists (no el barrel) para evitar ciclo de runtime. Los specialists importan del motor, y el motor importa solo tipos que TypeScript borra.
+- El `mock-invokers.ts` retorna shapes específicos por specialist (detectado por substring del system prompt), no genéricos. Esto hace que los tests deterministas y detecta routing incorrecto.
+- El test D2a.5 (`test_workflow_d2a_5.mts`) tuvo que actualizarse para proveer un `SpecialistRegistry` ahora que el fixture declara `assignedSpecialist` en `classify`. Los 7 tests D2a.5 siguen pasando sin cambios en asserts (el specialist usa como invoker el mismo `RevisionGenericaLLM` mock del test).
+- Solo `classify` del fixture tiene `assignedSpecialist`. `extract` y `summarize` no porque `ClauseReviewerSpecialist` espera shapes distintos a los que el mock del fixture retorna (decisión documentada: el campo es opcional, no obligatorio en TODOS los nodos LLM).
 
 ---
 
