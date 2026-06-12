@@ -18,7 +18,12 @@
 - Fixture actualizado: `tests/fixtures/revision-generica.workflow.json` con `assignedSpecialist` en `classify`.
 - Tests: **130/130 pasan** (53 + 36 + 18 + 7 + **16 nuevos en `test_workflow_d2b_1.mts`**). Cero regresiones.
 
-**Próximo sprint propuesto**: **D2b.2** — verifier en sub-sesión real + Agent Cards JSON tipo A2A + lifecycle `spawn→idle→busy→paused→done→archived` + integración real con OpenRouter + cost attribution con pricing real + Citation Grounding v2 (roadmap §5.13).
+**Sprint en curso**: **D2b.2 — Specialists Reales: OpenRouter + Agent Cards + Lifecycle + Verifier Sub-sesión**. Spec escrita y auditada.
+- Spec: `AGENT_D2B_2_SPEC.md` v1.0 (cerrada tras auditoría, 20 decisiones registradas).
+- Implementación: pendiente (`OpenRouterClient`, `OpenRouterLLMInvoker`, `PricingCatalog`, `AgentCard`, `Lifecycle`, refactor de los 3 specialists, Citation Grounding v2).
+- Decisiones confirmadas con el usuario: (1) verifier sub-sesión = prompt limpio, mismo LLM (Opción A); (2) 3 modelos en el catálogo; (3) Agent Card = objeto TypeScript con `toJSON()` A2A v1.0.
+
+**Próximo sprint propuesto**: **D2c — Skills v1** (después de D2b.2). Roadmap §5.4, §5.14. Empaquetar las topic-based policies como skills con SKILL.md, principios jurídicos colombianos.
 
 **D1 cerrada**, **D2a cerrado** (motor completo), **D2b.1 cerrado** (multi-modelo + 3 specialists con mocks). Pendiente: D2b.2 (specialists reales), D2c (skills v1), D3 (multi-tenant), D4 (memoria), D5 (RAG), D6 (editor).
 
@@ -87,6 +92,38 @@
 
 ---
 
+## Sprint en curso: D2b.2
+
+**Qué cubre**: el sprint más grande hasta ahora. Enchufa la integración real con OpenRouter (la key ya está en `.env`), formaliza los Agent Cards (A2A v1.0), introduce el lifecycle de specialists (`spawn → idle → busy → paused → done → archived`), y mueve el verifier a "sub-sesión lógica" con prompt limpio (sin acceso al system prompt del productor). Agrega Citation Grounding v2 como extensión del verifier.
+
+**Componentes a entregar**:
+- 5 archivos nuevos en `src/agent/llm/`: `openrouter-client.ts`, `openrouter-errors.ts`, `openrouter-invoker.ts`, `pricing-catalog.ts`, `index.ts`.
+- 3 archivos nuevos en `src/agent/specialists/`: `agent-card.ts`, `lifecycle.ts`, `agent-cards/index.ts`.
+- Refactor mayor: `specialist.ts` (interface con +agentCard, +lifecycle), `intake-specialist.ts`, `clause-reviewer-specialist.ts`, `verifier-specialist.ts` (sub-sesión + Citation Grounding v2), `mocks/mock-invokers.ts` (+MockOpenRouterClient).
+- `test_workflow_d2b_2.mts` con 50+ tests (1 smoke test opcional con OpenRouter real).
+
+**Sin cambios al motor Capa 1**: el `WorkflowExecutor`, `runLoop`, `node-runner.ts` no se tocan. El routing D2b.1 sigue funcionando.
+
+**Tests al cierre esperado**: 130 (D2a/D2b.1) + 50+ (D2b.2) = **180+ tests pasan**, cero regresiones.
+
+**Decisiones más opinadas (registradas en `AGENT_D2B_2_SPEC.md` §8, 20 decisiones)**:
+- **Sub-sesión del verifier = prompt limpio, mismo LLM** (confirmado con el usuario). NO child_process, NO Mavis. El system prompt del verifier es completamente independiente del system prompt del productor. La auditoría mejora (registramos los 2 system prompts) y la complejidad operacional se mantiene en cero.
+- **OpenRouter = `fetch` directo, NO SDK `openai`**. Mismo patrón que `src/agent/memory.ts` ya usa para embeddings.
+- **3 modelos hardcodeados en el catálogo** (deepseek-chat, claude-3.5-sonnet, qwen3-embedding-8b) con precios públicos de OpenRouter. Configurable vía `PricingCatalog.extend()`.
+- **Agent Card = objeto TypeScript con `toJSON()` A2A v1.0** (confirmado). Una sola fuente de verdad. D3+ A2A server usa el mismo `toJSON()`.
+- **`agentVersion` cambia de `1.0.0-d2b.1` a `1.0.0`** (semver limpio). El sufijo `-d2b.1` se elimina.
+- **Cost real = `usage.cost` de OpenRouter** (cuando está) + `PricingCatalog` como fallback. OpenRouter devuelve el costo exacto facturado.
+- **Lifecycle = state machine simple en código** (sin xstate ni libs externas). 6 estados, transiciones explícitas, eventos in-memory.
+- **Citation Grounding v2 = heurística** (substring + lista cerrada de campos de metadatos). `read_section` real es D3+ con RAG.
+- **5xx mapea a `MODEL_UNAVAILABLE`** (retriable), no a `INTERNAL_ERROR` (no retriable). Corrección post-auditoría del spec.
+- **Constructors backward-compat**: `new IntakeSpecialist(inv)`, `new ClauseReviewerSpecialist(inv)`, `new VerifierSpecialist(inv)` siguen funcionando. `agentCard` y `lifecycle` se inicializan internamente, no se pasan como params.
+- **El `raw` field del `ChatResponse` NO se loguea por default** (puede contener metadata sensible). El cliente loguea solo status, latency, model.
+- **Smoke test E2E con OpenRouter real es opcional** (depende de la key en env). Los demás 50+ tests son offline.
+
+**Lo que NO toca D2b.2** (deuda a sprints futuros): A2A server HTTP (D3+), streaming (D3+ o demanda), `read_section` real (D3+), principios jurídicos (D2c), MCP, multi-tenant (D3), circuit breaker por specialist (D3+), SaC (D3+ con cliente), pricing configurable por tenant (D3), cost attribution con desglose de reasoning tokens (D3).
+
+---
+
 ## Sprint recién cerrado: D2b.1
 
 **Qué cubre**: primer sprint de D2b (multi-modelo + specialists, roadmap §6.2). Introduce el `TierResolver` configurable (liviano + robusto), los 3 specialists del roadmap (`IntakeSpecialist`, `ClauseReviewerSpecialist`, `VerifierSpecialist`) con mocks, y el routing por `node.assignedSpecialist`. Capa 3 del sistema agéntico (workflow engine es Capa 1).
@@ -99,24 +136,12 @@
 
 **Tests al cierre**: **130/130 pasan** (53 originales + 36 D2a.2.3 + 18 D2a.4 + 7 D2a.5 + 16 D2b.1). Cero regresiones.
 
-**Decisiones más opinadas (registradas en `AGENT_D2B_1_SPEC.md` §8, 18 decisiones)**:
-- D2b en 2 sprints cortos, no 1 ni 3. Balance control/velocidad.
-- Specialist hace TODA la lógica del nodo (system + user + output validation + confidence gating). Node-runner es pasivo. Razón: el specialist tiene el system prompt; el motor no sabe esas reglas.
-- Falla fast en `startTask` si `assignedSpecialist` no existe (validación al cargar, `NODE_NOT_FOUND`). No en runtime.
-- D2b.1 son mocks con prompts genéricos. Principios jurídicos (roadmap §5.14) entran en D2b.2 con skills v1 de D2c.
-- Circuit breaker sigue siendo por modelo en D2b.1 (D2a.4). Circuit breaker por specialist queda para D2b.2 con Agent Cards.
-- `assignedSpecialist` opcional en el LLMNode. Backward-compat: workflows sin el campo se ejecutan idéntico a D2a.4.
-- `tierResolver` opcional en ExecutorConfig. Sin él, el motor usa `llmInvoker` default (D2a.4).
-- `NodeResult.metadata.executedBy` opcional, se popula solo para nodos con specialist.
-
-**Lo que NO toca D2b.1** (deuda a D2b.2): integración real con OpenRouter, Agent Cards formales (JSON tipo A2A), lifecycle `spawn→idle→busy→paused→done→archived`, cost attribution con pricing real, verifier en sub-sesión aislada, Citation Grounding v2, MCP, principios jurídicos colombianos en prompts.
-
 **Notas de implementación**:
-- El `Specialist` interface requiere un campo `agentVersion: string` (no se me ocurrió en la spec original, lo agregué durante la implementación para que el motor pueda poblar `metadata.executedBy` sin consultar el registry dos veces). El valor es `SPECIALIST_AGENT_VERSION = "1.0.0-d2b.1"`.
-- El `executor/types.ts` importa SOLO TIPOS de los specialists (no el barrel) para evitar ciclo de runtime. Los specialists importan del motor, y el motor importa solo tipos que TypeScript borra.
-- El `mock-invokers.ts` retorna shapes específicos por specialist (detectado por substring del system prompt), no genéricos. Esto hace que los tests deterministas y detecta routing incorrecto.
-- El test D2a.5 (`test_workflow_d2a_5.mts`) tuvo que actualizarse para proveer un `SpecialistRegistry` ahora que el fixture declara `assignedSpecialist` en `classify`. Los 7 tests D2a.5 siguen pasando sin cambios en asserts (el specialist usa como invoker el mismo `RevisionGenericaLLM` mock del test).
-- Solo `classify` del fixture tiene `assignedSpecialist`. `extract` y `summarize` no porque `ClauseReviewerSpecialist` espera shapes distintos a los que el mock del fixture retorna (decisión documentada: el campo es opcional, no obligatorio en TODOS los nodos LLM).
+- El `Specialist` interface requiere un campo `agentVersion: string`. En D2b.1 era `1.0.0-d2b.1` (placeholder); en D2b.2 cambia a `1.0.0` (semver limpio).
+- El `executor/types.ts` importa SOLO TIPOS de los specialists (no el barrel) para evitar ciclo de runtime.
+- El `mock-invokers.ts` retorna shapes específicos por specialist (detectado por substring del system prompt).
+- El test D2a.5 tuvo que actualizarse para proveer un `SpecialistRegistry` cuando el fixture declara `assignedSpecialist` en `classify`. 7/7 tests siguen pasando.
+- Solo `classify` del fixture tiene `assignedSpecialist`. `extract` y `summarize` no porque `ClauseReviewerSpecialist` espera shapes distintos a los que el mock del fixture retorna.
 
 ---
 
