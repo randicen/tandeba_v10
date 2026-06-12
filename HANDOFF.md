@@ -10,16 +10,16 @@
 
 ## Estado al cierre de esta sesión
 
-**Fecha**: 2026-06-10
-**Sprint cerrado**: **D2a.4 — HITL Primitives: pause/resume reales**.
-- Spec: `AGENT_D2A_4_HITL_PRIMITIVES_SPEC.md` v1.0 (cerrada tras auditoría, decisiones revisadas por tests preexistentes).
-- Implementación: completa (5 archivos del motor modificados + barrel).
-- Tests: **107/107 pasan** en el motor (53 originales + 36 D2a.2.3 + **18 nuevos en `test_workflow_d2a_4.mts`**). Cero regresiones.
-- Compilación: limpia (errores TS que quedan son preexistentes del equipo: parser, `@ts-expect-error` huérfanas).
+**Fecha**: 2026-06-12
+**Sprint cerrado**: **D2a.5 — Workflow ejemplo end-to-end**. D2a cerrado completo.
+- Spec: `AGENT_D2A_5_SPEC.md` v1.0 (cerrada tras auditoría).
+- Implementación: 1 fixture JSON (`tests/fixtures/revision-generica.workflow.json`) + 1 test file (`test_workflow_d2a_5.mts`, 7 tests).
+- Tests: **114/114 pasan** en el motor (53 originales + 36 D2a.2.3 + 18 D2a.4 + **7 nuevos en `test_workflow_d2a_5.mts`**). Cero regresiones.
+- Sin cambios al motor (cerrado en D2a.4).
 
-**Próximo sprint propuesto**: **D2a.5 (workflow ejemplo end-to-end)** — workflow genérico `classify → extract → summarize → approve` con HITL real. Smoke test del motor entero. Cierra D2a. Ver §"Próximo sprint" abajo.
+**Próximo sprint propuesto**: **D2b (multi-modelo + specialists)** — D2b es la primera vez que el motor hace trabajo real de legal colombiano. Ver §"Próximo sprint" abajo.
 
-**D1 cerrada**, **D2a cerrado** (motor — primitivas de núcleo + HITL pause/resume). Pendiente: D2b (specialists), D2c (skills v1), D3 (multi-tenant), D4 (memoria), D5 (RAG), D6 (editor).
+**D1 cerrada**, **D2a cerrado** (motor completo: primitivas de núcleo + HITL pause/resume + workflow ejemplo end-to-end). Pendiente: D2b (specialists), D2c (skills v1), D3 (multi-tenant), D4 (memoria), D5 (RAG), D6 (editor).
 
 ---
 
@@ -83,6 +83,56 @@
 3. Falta de guarda en `runLoop` para estado terminal tras `applyHITLResponse` → loop infinito. Arreglado con check al inicio del while.
 
 **Decisiones que tomé yo en este turno (registradas en spec §11)**: 14 decisiones, todas reversibles. La más opinada fue NO migrar el `ask_human` (corregido tras auditoría cuando descubrí que es una tool, no un handler del motor). La más revisada post-implementación: hacer el motor permisivo con `allowDecline=false` para mantener backward-compat con tests preexistentes.
+
+---
+
+## Sprint recién cerrado: D2a.5
+
+**Qué cubre**: smoke test del motor entero (D2a.2 + D2a.2.2 + D2a.2.3 + D2a.4) con un workflow real. Hasta D2a.4 los tests probaban primitivas aisladas; D2a.5 prueba que **juntas funcionan en un workflow no-trivial**. Cierra D2a.
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Componentes entregados**:
+- `tests/fixtures/revision-generica.workflow.json` (nuevo) — el workflow del DSL spec §5 como JSON ejecutable, con `additionalProperties: false` para validación estricta.
+- `test_workflow_d2a_5.mts` (nuevo) — 7 tests de smoke + mocks + setup compartido.
+- **Sin cambios al motor** (cerrado en D2a.4).
+
+**Tests entregados (7)**:
+1. ✅ Smoke happy path con `immediateResponse` (modo interactivo).
+2. ✅ Smoke con `paused_hitl` + `resumeTask` (modo desacoplado).
+3. ✅ State validation rechaza input con prop extra (rompe `additionalProperties: false`).
+4. ✅ State validation rechaza output de nodo LLM con tipo incorrecto.
+5. ✅ Prompt snapshot se persiste en al menos 2 nodos LLM (classify y summarize).
+6. ✅ Replay del workflow completo con input distinto.
+7. ✅ Confidence gating lee el campo `confidence` del output.
+
+**Bugs descubiertos durante implementación (todos arreglados en el fixture, NO en el motor)**:
+1. El motor valida `{ input }` (envuelve) contra el `stateSchema` — el `stateSchema` debe declarar `input` como propiedad explícita (no asumir props sueltas). Fixture arreglado.
+2. El motor inicializa `state = { input: ... }` — los templates `{{state.documentId}}` deben ser `{{state.input.documentId}}`. Fixture arreglado.
+3. El `node-runner.ts` lee `node.systemPrompt` y `node.userPrompt` separados — NO usa `input.from.template` como prompt. Fixture arreglado.
+4. El `output.to.template` no se procesa (escribir el output completo, no interpolar). Fixture arreglado (quité el template del output del `summarize`).
+5. La detección de `additionalProperties: false` se necesita para forzar SCHEMA_VIOLATION en input (sin `required`, el input `{}` pasa). Fixture arreglado.
+
+**Conteo final**: 107 (motor) + 7 (D2a.5) = **114/114 tests pasan**. Cero regresiones.
+
+**Decisiones que tomé yo en este turno (registradas en spec §8)**:
+1. Usar el workflow del DSL spec §5 sin reinventarlo.
+2. Dos modos de HITL testeados (`immediateResponse` + `paused_hitl` + `resumeTask`) — cubre ambos patrones de uso.
+3. JSON en `tests/fixtures/` separado del test, para legibilidad y reutilización.
+4. Cero cambios al motor en este sprint (los bugs descubiertos eran del fixture, no del motor — el motor funcionó como siempre).
+5. 7 tests de smoke, no exhaustivo (los edge cases ya están cubiertos por unit tests).
+6. Mocks específicos al workflow, no genéricos — el smoke test valida state correcto.
+
+**Correcciones aplicadas durante la auditoría del spec (commit `007cd7f`)**:
+- Mock LLM identifica nodo por `userPrompt`/`systemPrompt`, NO por `model` (que es compartido).
+- `validateWorkflow` en setup es opcional (el motor ya valida en `startTask`).
+- Test 3 (input inválido) usa input con tipo incorrecto, no `null` (el schema no requiere propiedades).
+- Test 5 (prompt snapshot) verifica al menos 2 nodos LLM, no solo `classify`.
+- JSON del fixture usa `additionalProperties: false` en vez de `required` (decisión del fixture, no del DSL).
+
+**Deuda menor para sprints futuros (NO arreglada, documentada)**:
+- El spec DSL §5 (que es la fuente del workflow) tiene los prompts en `input.from.template` (mal — el motor lee `node.systemPrompt`/`node.userPrompt`). El fixture lo corrige. **El spec DSL §5 debería actualizarse para reflejar la forma correcta de los nodos LLM**. Out of scope de D2a.5 (es un fix de docs, no de motor).
+- El spec DSL §5 también tiene un bug en el `output.to.template` del `summarize` (que el motor no soporta). El fixture lo corrige quitando el template. Mismo comentario: actualizar el spec DSL.
 
 ---
 
@@ -183,3 +233,4 @@
 
 - **2026-06-10**: creado. Cierre de D2a.2.3 (spec v1.1 + implementación + 89 tests). 36 tests nuevos en `test_workflow_d2a_2_3.mts`. Decisión sobre SaC documentada en `AGENT_ROADMAP.md` §5.15. Regla 6b agregada a `AGENTS.md`.
 - **2026-06-10 (cierre del día)**: sprint D2a.4 cerrado. Spec `AGENT_D2A_4_HITL_PRIMITIVES_SPEC.md` v1.0 escrita, auditada y revisada post-implementación. Implementación completa del motor: separación de fases pause/resume con `HITLHandler.initiate()` no-bloqueante + `executor.resumeTask()`. 18 tests nuevos en `test_workflow_d2a_4.mts`. Suite completa del motor: **107/107 tests pasan** (53 + 36 + 18). Cero regresiones. D2a cerrado. Próximo sprint propuesto: D2a.5 (workflow ejemplo end-to-end).
+- **2026-06-12 (mañana)**: sprint D2a.5 cerrado. Spec `AGENT_D2A_5_SPEC.md` v1.0 escrita, auditada y corregida (4 correcciones aplicadas: mock LLM identifica nodo por prompt no por model, validateWorkflow redundante, test 3 con tipo incorrecto no null, test 5 con 2 nodos LLM). Fixture JSON `tests/fixtures/revision-generica.workflow.json` creado. 7 tests nuevos en `test_workflow_d2a_5.mts` (smoke end-to-end del workflow). 5 bugs descubiertos en el fixture (no en el motor), todos arreglados: motor valida `{ input }` envuelto, state inicializa con `input`, prompts en `systemPrompt`/`userPrompt` separados, output.to.template no se procesa, additionalProperties:false necesario para validación estricta. Suite completa del motor: **114/114 tests pasan** (53 + 36 + 18 + 7). Cero regresiones. **D2a cerrado completo**. Próximo sprint propuesto: D2b (multi-modelo + specialists).

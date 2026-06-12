@@ -1,0 +1,121 @@
+{
+  "id": "revision-generica",
+  "name": "Revisión Genérica de Documentos",
+  "description": "Workflow de prueba end-to-end del motor (D2a.5). Clasifica un documento, extrae cláusulas, resume, y pide aprobación humana. NO es representativo de un caso legal real — se eligió por simplicidad para validar el motor. Fuente: AGENT_WORKFLOW_DSL_SPEC.md §5.",
+  "workflowVersion": "1.0.0",
+  "schemaVersion": 1,
+  "stateSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "documentId": { "type": "string" },
+          "documentContent": { "type": "string" }
+        }
+      },
+      "classification": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "category": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "extractedClauses": {
+        "type": "array",
+        "items": { "type": "object", "additionalProperties": true }
+      },
+      "summary": { "type": "string" },
+      "approval": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        }
+      }
+    }
+  },
+  "config": {
+    "defaultTimeoutMs": 60000,
+    "defaultRetries": 0
+  },
+  "nodes": [
+    {
+      "id": "classify",
+      "type": "llm",
+      "name": "Clasificar documento",
+      "model": "liviano",
+      "systemPrompt": "Sos un clasificador de documentos legales. Recibís el contenido de un documento y devolvés su categoría (contrato / demanda / sentencia / opinión / otro) y tu nivel de confianza entre 0 y 1 (0 = sin idea, 1 = absolutamente seguro).",
+      "userPrompt": "{{state.input.documentContent}}",
+      "input": { "from": { "template": "{{state.input.documentContent}}" } },
+      "output": { "to": { "path": "classification" } },
+      "outputSchema": {
+        "type": "object",
+        "required": ["category", "confidence"],
+        "properties": {
+          "category": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "confidenceGating": {
+        "highThreshold": 0.8,
+        "mediumThreshold": 0.5,
+        "onMedium": "continue",
+        "onLow": "ask_user"
+      }
+    },
+    {
+      "id": "extract",
+      "type": "llm",
+      "name": "Extraer cláusulas",
+      "model": "robusto",
+      "userPrompt": "{{state.input.documentContent}}",
+      "input": { "from": { "template": "{{state.input.documentContent}}" } },
+      "output": { "to": { "path": "extractedClauses" } },
+      "retries": { "max": 2, "on": ["RATE_LIMIT", "TIMEOUT"] }
+    },
+    {
+      "id": "summarize",
+      "type": "llm",
+      "name": "Resumir documento",
+      "model": "robusto",
+      "userPrompt": "DOCUMENTO:\n{{state.input.documentContent}}\n\nCLÁUSULAS EXTRAÍDAS:\n{{state.extractedClauses}}",
+      "input": {
+        "from": { "template": "DOCUMENTO:\n{{state.input.documentContent}}\n\nCLÁUSULAS EXTRAÍDAS:\n{{state.extractedClauses}}" }
+      },
+      "output": { "to": { "path": "summary" } }
+    },
+    {
+      "id": "approve",
+      "type": "hitl",
+      "name": "Aprobación humana",
+      "approvers": ["role:abogado_senior"],
+      "question": { "from": { "template": "¿Aprobás este resumen del documento?\n\n{{state.summary}}" } },
+      "context": { "from": { "template": "Documento ID: {{state.input.documentId}}\nCategoría: {{state.classification.category}}" } },
+      "output": { "to": { "path": "approval" } },
+      "outputSchema": {
+        "type": "object",
+        "required": ["approved"],
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        }
+      },
+      "approvalMode": "any",
+      "allowDecline": true,
+      "declineReasons": ["conflict_of_interest", "needs_revision", "other"],
+      "timeoutMs": 86400000,
+      "onTimeout": "fail"
+    }
+  ],
+  "edges": [
+    { "from": "classify", "to": "extract" },
+    { "from": "extract", "to": "summarize" },
+    { "from": "summarize", "to": "approve" }
+  ],
+  "entryNode": "classify"
+}
