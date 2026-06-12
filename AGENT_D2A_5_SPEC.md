@@ -46,7 +46,9 @@ Cada test prueba UNA primitiva. **Nunca probamos el workflow completo de inicio 
 ### 2.1. Goals (lo que D2a.5 DEBE cumplir)
 
 1. **Workflow ejecutable end-to-end**: el JSON del workflow `revision-generica` corre de inicio a fin sin errores. El motor completa la task con `status='completed'` y todos los `NodeResult` con `status='completed'`.
-2. **Mocks productivos**: el `LLMInvoker` mock retorna outputs válidos para `classify`, `extract`, `summarize`. El `HITLHandler` mock retorna `immediateResponse` para `approve` (o se llama `resumeTask` programáticamente en un test alternativo). El `FunctionRegistry` está vacío (no se usan nodos `function` en el workflow).
+2. **Mocks productivos**: el `LLMInvoker` mock retorna outputs válidos para `classify`, `extract`, `summarize`. El `HITLHandler` mock retorna `immediateResponse` para `approve` (o se llama `resumeTask` programáticamente en un test alternativo). El `FunctionRegistry` está vacío (no se usan nodos `function` en el workflow; igual el `ExecutorConfig` lo requiere como inyectable, ver §3.3).
+
+**Identificación de nodo en el mock LLM**: el mock identifica qué nodo lo llama por el `userPrompt` o `systemPrompt` (campos únicos por nodo en el workflow), NO por el campo `model` (que es compartido entre workflows, ej: `model: "robusto"` lo usan `extract` y `summarize`). Implementación típica: matchear un substring del prompt contra constantes por nodo.
 3. **Ejercitar todas las primitivas no negociables en un solo test**:
    - State schema validation (input + post-output).
    - Prompt snapshot persistence (nodos LLM).
@@ -122,6 +124,8 @@ const input = {
 
 **Alternativa considerada**: inline el JSON en el `.mts`. **Descartada**: el JSON tiene ~80 líneas, inline hace el test ilegible.
 
+**Diferencia con el spec DSL §5**: el JSON del spec DSL §5 tiene `stateSchema` con `properties` pero sin `required` (las propiedades son todas opcionales). Para que el test 3 (state validation rechaza input inválido) funcione sin falsear el schema, el JSON del fixture agrega `required: ["documentContent"]`. Es una decisión del fixture, no del spec DSL — el DSL deja las propiedades como opcionales a propósito (los workflows reales pueden tener input parcial).
+
 ### 3.6. ¿Se commitea el cambio al motor?
 
 **No, en principio.** Si el smoke test pasa sin tocar el motor, D2a.5 es solo tests + fixture JSON. Si el smoke test revela un bug del motor, ese bug se arregla en un sprint aparte (no se mezcla con D2a.5).
@@ -167,13 +171,13 @@ class RevisionGenericaHITL implements HITLHandler {
 
 2. **`smoke: workflow revision-generica con pause/resume explícito`** — el caso HITL real. Verifica que la task se pausa con `pendingDecision`, el test llama `resumeTask`, y la task completa.
 
-3. **`smoke: state validation rechaza input inicial inválido`** — pasa `input: null` cuando el schema requiere `documentId: string`. Verifica que `startTask` tira `ExecutorError` con código `SCHEMA_VIOLATION`.
+3. **`smoke: state validation rechaza input inicial inválido`** — pasa un input que rompe el `stateSchema`. Verifica que `startTask` tira `ExecutorError` con código `SCHEMA_VIOLATION`. **Decisión de implementación**: el workflow del spec DSL §5 no tiene `required: ["documentId"]` en el `stateSchema` (solo `properties`), así que pasar `input: null` puede no fallar. El test debería pasar explícitamente `{ documentContent: 123 }` (número en vez de string) para forzar la violación. O agregar `required: ["documentContent"]` al JSON del workflow (decisión: agregar `required` para hacer el test más estricto).
 
 4. **`smoke: state validation rechaza output que rompe schema`** — el mock LLM de `classify` retorna `{category: 123}` (número en vez de string). Verifica que la task falla con `SCHEMA_VIOLATION` y el `NodeResult` de `classify` queda en `failed`.
 
-5. **`smoke: prompt snapshot se persiste en nodos LLM`** — el `NodeResult` de `classify` tiene `promptSnapshot` con system + user interpolados (no vacíos).
+5. **`smoke: prompt snapshot se persiste en nodos LLM`** — los `NodeResult` de `classify` y `summarize` (ambos nodos LLM) tienen `promptSnapshot` con system + user interpolados (no vacíos). Verificar **al menos 2 nodos LLM** porque el spec dice que el snapshot es invariante, no solo en un nodo.
 
-6. **`smoke: replay del workflow completo con input distinto`** — corre el workflow, hace `replayTask` con un `documentContent` distinto, verifica que la nueva task corre el workflow con el nuevo input.
+6. **`smoke: replay del workflow completo con input distinto`** — corre el workflow, hace `replayTask` con un `documentContent` distinto, verifica que la nueva task corre el workflow con el nuevo input y completa con el state del nuevo documento.
 
 7. **`smoke: confidence gating lee el campo confidence del output`** — el output de `classify` tiene `confidence: 0.95`. El motor calcula el label (HIGH/MEDIUM/LOW) y lo persiste en `NodeResult.confidence`. Verifica que el label es `HIGH` con `highThreshold: 0.8`.
 
@@ -189,9 +193,16 @@ function setupRevisionGenerica(): {
   const workflow = JSON.parse(
     readFileSync("tests/fixtures/revision-generica.workflow.json", "utf-8"),
   );
+  // Sanity check opcional: el motor valida el workflow en startTask, pero
+  // validarlo acá acelera el debug si el JSON está mal armado.
+  // const validation = validateWorkflow(workflow);
+  // assert.equal(validation.valid, true, "workflow debe pasar validateWorkflow");
   const llm = new RevisionGenericaLLM();
   const hitl = new RevisionGenericaHITL();
   const executor = new WorkflowExecutor({
+    // FunctionRegistry vacío: el workflow no usa nodos `function`, pero el
+    // ExecutorConfig requiere el inyectable. Cast por mismatch preexistente
+    // de tipos (FunctionRegistry vs Map<string, WorkflowFunction>).
     functionRegistry: new FunctionRegistry() as unknown as Map<string, WorkflowFunction>,
     llmInvoker: llm,
     hitlHandler: hitl,
@@ -230,6 +241,8 @@ El smoke test NO es exhaustivo. Cubre los flujos principales. Los edge cases est
 | Schema versioning con migrador | `test_workflow_d2a_2_3.mts` unitarios |
 | Circuit breaker abierto | `test_workflow_d2a_2_3.mts` unitarios |
 | Reintento de LLM por RATE_LIMIT | `test_workflow_executor.mts` unitarios |
+
+**Conteo final esperado al cierre de D2a.5**: 107 (motor, sin cambios) + 7 (D2a.5 smoke) = **114/114 tests pasan**. Cero regresiones.
 
 ---
 
