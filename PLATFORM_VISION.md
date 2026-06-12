@@ -2,6 +2,8 @@
 
 > Este documento captura la visión del producto y sirve como norte arquitectónico.  
 > No es una especificación técnica final, sino el marco de diseño para iterar.
+>
+> Las **decisiones arquitectónicas vigentes** del sistema agéntico (motor de workflows, 3 capas, multi-modelo, memoria 4 tipos, verificador en sub-sesión, custom DSL) están en [`AGENT_ROADMAP.md`](./AGENT_ROADMAP.md). Este doc describe QUÉ construimos como producto; el roadmap describe CÓMO.
 
 ---
 
@@ -20,7 +22,7 @@ Una interfaz de agente LLM con hilos, especializada para firmas profesionales (a
 - **Selector de modo Fast / Pro**: el usuario elige entre:
   - **Fast**: modelo más rápido y económico, adecuado para consultas cotidianas, redacción simple, búsquedas directas.
   - **Pro**: modelo con mayor profundidad y completitud de información, workflow más robusto. Ideal para análisis complejos, investigación profunda, documentos extensos.
-  - Ambos modos mantienen la misma calidad de producto (Internal Quality Review y Citation Grounding siempre activos). La diferencia es de velocidad, costo y exhaustividad, no de precisión.
+  - Ambos modos mantienen la misma calidad de producto. La diferencia es de velocidad, costo y exhaustividad, no de precisión. El routing interno multi-modelo por nodo (qué modelo se usa en cada paso del workflow) es decisión técnica del motor, invisible al usuario (ver §11).
 - **Adjuntar desde Bóveda**: el usuario puede adjuntar archivos desde las bóvedas asociadas a la carpeta actual, además de subir archivos directamente.
 
 ### 2.5 Monitores (Dashboard de actividad)
@@ -78,13 +80,13 @@ El modelo se compone de dos fases: (A) ingesta de documentos, que se ejecuta una
   - **Derogación**: si fue derogado por una ley posterior, con indicación de la norma derogatoria (derogatoria expresa) o por incompatibilidad (derogatoria orgánica).
   - **Modificación**: si leyes posteriores sustituyen o adicionan contenido (ej. "Artículo 5 modificado por Ley 2080 de 2021, art. 3").
   - **Inexequibilidad**: si la Corte Constitucional declaró la norma inexequible, con el número de la sentencia que la retiró del ordenamiento jurídico.
-  - **Vigencia actual**: derivado de los tres anteriores, un campo calculado que indica si la norma está vigente total, vigente parcial (algunos artículos caídos), o no vigente.
+  - **Vigencia actual**: derivado de los tres anteriores, un campo calculado que indica si la norma está vigente total, vigente parcial (algunos artículos caídos), o no vigente. **Se computa a query time por traversal del grafo de derogaciones**, no se almacena como flag estático. La cadena de derogación puede tener varios eslabones: A → derogada por B → derogada por C. Si C está vigente, A está derogada. Si C está derogada, la derogación de B cae, y la derogación de A también cae (B no puede haber derogado nada si está muerta). La traversal garantiza que cualquier cambio en la cadena se propague automáticamente sin actualizar flags manualmente.
 - **Referencias cruzadas**: enlaces entre normas relacionadas (ley original ↔ leyes modificatorias ↔ sentencias de inexequibilidad) para navegación rápida.
 - **Mecanismo de actualización de metadatos**: las notas de vigencia no son estáticas. Funcionan así:
   1. Al descargar una norma de SUIN (Sistema Único de Información Normativa), los metadatos de vigencia vienen incluidos en la fuente.
   2. Cuando se ingiere una nueva norma que explícitamente modifica o deroga otra, el sistema detecta las referencias cruzadas en el campo anterior y re-descarga de SUIN las normas afectadas.
   3. Los metadatos antiguos de las normas afectadas se reemplazan por los nuevos (que ahora reflejan derogación, modificación o inexequibilidad).
-  4. El campo `vigencia_actual` se recalcula automáticamente al actualizar cualquier nota de vigencia.
+  4. El campo `vigencia_actual` se recalcula automáticamente al actualizar cualquier nota de vigencia. En la práctica, la vigencia se resuelve a query time siguiendo la cadena de derogadores en el grafo — un solo `UPDATE` de un eslabón (ej. marcar C como derogada) se propaga automáticamente al estado de A y B sin escrituras adicionales.
 - **Resumen estructurado por secciones**: generado por un LLM durante la ingesta, aprovechando que BGE-M3 soporta hasta 8192 tokens de contexto. En lugar de un resumen genérico, el LLM recibe el mapa anatómico del documento y extrae las proposiciones jurídicas clave de cada sección con sus artículos correspondientes. Ejemplo:
 ```
 LEY 610 DE 2000 — Régimen de responsabilidad fiscal
@@ -121,21 +123,53 @@ El chunking no se aplica a ciegas sobre ventanas de tokens. Los documentos legal
 | Sentencia, auto, providencia | Considerando, Antecedentes, Resuelve como unidad. | Misma lógica: sección completa si cabe. Si excede (~2000+ tokens en considerandos extensos), PAKTON: sub-chunks con metadatos de sección y rango dentro del considerando. |
 | Contrato, doctrina, concepto | Cláusula o sección lógica identificable (cláusula primera, cláusula segunda...). | Chunking semántico tradicional con solapamiento del 10%, respetando cláusulas como frontera. |
 
+**Contexto en el embedding (PAKTON completo).** El chunk a secas — "Artículo 5. Modifíquese el art. 234 del CPenal" — es ambiguo: ¿qué art. 234? ¿de qué versión? Sin contexto, el vector denso solo captura una oración corta y la similitud semántica se degrada. El chunk que se embebe, y se almacena, viaja con contexto prefijado de tres niveles:
+
+1. **Ancestor (jerárquico)**: prefijo de la cadena de contenedores, de raíz a hoja.
+   ```
+   [LEY 2080/2021]
+   [CAPÍTULO II — Reforma procesal]
+   [Artículo 3 — Modificaciones al CPACA]
+   Artículo 5. Modifíquese el artículo 234 del Código Penal.
+   ```
+   ~50–100 tokens. **Siempre** se incluye.
+
+2. **Sibling (artículos vecinos, "por contraste")**: el agente que lee el chunk necesita saber qué hace el artículo anterior y el siguiente para entender el patrón. Para una unidad de 800 tokens, se incluyen los 1–2 vecinos inmediatos en forma resumida.
+   ```
+   Previo: Art. 4 — Modifica art. 233 CPACA
+   Actual: Art. 5 — Modifica art. 234 CPenal
+   Siguiente: Art. 6 — Modifica art. 235 CPACA
+   ```
+   ~100–200 tokens. **Siempre** se incluye si los vecinos existen.
+
+3. **Predecessor (texto referenciado)**: si el chunk es una *modificación* ("modifíquese el art. X de la Ley Y"), se incluye el texto original del art. X al que modifica, para que el vector entienda QUÉ se está cambiando. Si el chunk es una *sentencia*, se incluye el enunciado del problema jurídico y la tesis del considerando anterior.
+   ```
+   El art. 5 modifica: Art. 234 del Código Penal —
+     "El prestador de salud responderá por los daños
+     al paciente derivados de la atención médica."
+   ```
+   ~200–500 tokens. **Condicional**: solo si el chunk contiene referencias explícitas a otras normas/secciones.
+
+Coste total de contexto embebido: 350–800 tokens extra sobre el chunk de ~800. Es decir, el embedding consume ~1200–1600 tokens de los 8192 disponibles. Todavía entra holgadamente.
+
+El chunk almacenado en el vector store es `contexto + unidad`, con `rango_inicio/rango_fin` apuntando únicamente al texto de la unidad (excluyendo el contexto prefijo). Las citas del agente citan la unidad, no el contexto. El contexto es solo para retrieval.
+
 **Metadatos de cada unidad:**
 - Todos los del Índice Documental (tipo, fecha, emisor, vigencia, referencias cruzadas).
 - `unit_type`: `artículo`, `numeral`, `parágrafo`, `considerando`, `resuelve`, `cláusula`, `inciso`.
 - `unit_number`: identificador normativo (ej. "3", "3.1", "4", "primera").
 - `parent_unit_id`: referencia a la unidad contenedora (ej. un numeral apunta al artículo que lo contiene).
 - `seccion`: sección del mapa anatómico a la que pertenece.
-- `rango_inicio`, `rango_fin`: offsets de caracteres dentro del documento íntegro.
+- `rango_inicio`, `rango_fin`: offsets de caracteres del texto de la unidad dentro del documento íntegro (excluye el contexto prefijo, que no se cita).
+- `context_token_count`: tokens del contexto prefijo (ancestor + sibling + predecessor), útil para auditoría y debugging.
 
-**Embeddings híbridos (dense + sparse):** misma configuración. BGE-M3 genera ambos tipos simultáneamente sin costo adicional:
-- **Denso**: captura el significado semántico. Útil para encontrar ideas similares aunque usen palabras distintas (ej. "responsabilidad médica" encuentra también "mala praxis").
+**Embeddings híbridos (dense + sparse):** misma configuración. BGE-M3 genera ambos tipos simultáneamente sin costo adicional sobre el chunk expandido:
+- **Denso**: captura el significado semántico del chunk + contexto. Útil para encontrar ideas similares aunque usen palabras distintas (ej. "responsabilidad médica" encuentra también "mala praxis").
 - **Sparse**: captura la presencia exacta de términos específicos. Útil para búsquedas léxicas precisas (ej. "artículo 234 del Código Penal" encuentra solo documentos que contienen literalmente esa cadena).
 
 **Dónde**: base de datos vectorial con soporte híbrido (dense + sparse) y filtros por metadatos.
 
-**Función**: recuperación precisa de unidades jurídicas completas. Una búsqueda devuelve el artículo íntegro, no un fragmento cortado. Si la unidad es muy extensa, los sub-chunks PAKTON preservan la trazabilidad al ancestro. Herramienta: `search_units(query, filtros_opcionales, k=20)`.
+**Función**: recuperación precisa de unidades jurídicas completas con su contexto jerárquico. Una búsqueda devuelve el artículo íntegro más el suficiente contexto para entender de dónde viene y qué hace. Si la unidad es muy extensa, los sub-chunks PAKTON preservan la trazabilidad al ancestro. Herramienta: `search_units(query, filtros_opcionales, k=20)`.
 
 ##### 3. Almacén de Texto Completo Estructurado
 - **Texto íntegro**: el documento completo en texto plano, con marcadores de sección.
@@ -180,15 +214,33 @@ El agente examina las 20 unidades y: agrupa por documento, identifica las seccio
 Herramientas: `get_structure(doc_id)` y `read_section(doc_id, inicio, fin)`.
 Para los 2-3 documentos más relevantes: obtiene el mapa anatómico completo, cruza con las unidades halladas, amplía la lectura a la sección completa que contiene cada unidad, y lee secciones colindantes si el razonamiento lo exige.
 
-**Paso 4 — Verificación dinámica de vigencia**
-Antes de responder, el agente verifica que las normas recuperadas estén vigentes. Para cada documento normativo relevante:
-- Consulta sus **notas de vigencia** en los metadatos del Índice Documental (derogación, modificación, inexequibilidad).
-- Ejecuta una **verificación dinámica** adicional usando `search_units` y `search_docs` para detectar:
-  - Leyes más recientes que hayan afectado los artículos citados.
-  - Sentencias de la Corte Constitucional que hayan declarado inexequible total o parcialmente la norma.
-  - Fallos de nulidad del Consejo de Estado sobre actos administrativos relevantes.
-- Si encuentra que una norma fue derogada, modificada o declarada inexequible, incorpora esa información en la respuesta e indica la norma o sentencia que produjo el cambio.
-- Si la verificación no es concluyente, lo advierte explícitamente y no afirma vigencia sin respaldo.
+**Paso 4 — Verificación de vigencia**
+Antes de responder, el agente verifica que las normas recuperadas estén vigentes. La verificación opera en dos niveles, del más confiable al más probabilístico:
+
+1. **SQL precalculado (camino rápido, 95% de casos)**: el agente consulta los campos `derogado_por`, `modificado_por`, `inexequible_por` del Índice Documental. La traversal del grafo de derogación resuelve el estado actual de cada norma. Si la cadena dice "Vigente", se reporta. Si dice "Derogada por X" o "Modificada por Y", se reporta con la referencia. La respuesta del SQL refleja los datos de la última sincronización con SUIN.
+2. **Safety net vectorial (solo si el SQL es ambiguo o antiguo)**: si el SQL dice "Vigente" pero la última sync de SUIN es de hace más de N días, o si la consulta del usuario tiene keywords que sugieren "esta norma podría haber cambiado" (ej. "última reforma", "norma vigente actualmente"), el agente ejecuta `search_units` + `search_docs` con queries como "Ley X derogada modificada inexequible" para detectar cambios no reflejados en el SQL. El resultado se verifica con `read_section` antes de afirmar.
+
+**Residual conocido (5-10% de casos)**: el sistema no detecta automáticamente la **derogación implícita** (una ley nueva que cubre la misma materia sin decir explícitamente "deroga X") ni las **modificaciones no declaradas** (un cambio de redacción que SUIN no marcó). El mecanismo de sync periódico de SUIN cubre las derogaciones **explícitas** (que SUIN sí registra); este gap es independiente. Para el residual se ejecuta un job de detección que se dispara al ingestar cada ley nueva:
+
+1. La ley nueva se indexa normalmente (ingesta Fase A: TXT, metadatos, embedding híbrido, chuncking PAKTON — todo el pipeline existente). Como parte de la ingesta, se genera por primera vez su resumen estructural (Fase A aplica también a la nueva ley, no solo a las viejas).
+2. Una vez indexada, se hace una búsqueda libre de normas vigentes cuya materia se solape con la nueva. La búsqueda usa los mismos mecanismos de retrieval del sistema (Índice 1 + Índice 2, dense + sparse, sin reglas rígidas de sector ni umbrales arbitrarios). Lo que determine el retrieval como más cercano es lo que se revisa. Es un retrieval normal, no un detector con reglas especiales.
+3. Para cada candidata del top-k, un LLM lee el resumen estructural de la nueva + el resumen estructural de la candidata + las fechas de expedición + (si están disponibles) los marcadores de "general" o "especial" de cada una. Aplica la **jerarquía de derogación del derecho colombiano** (Código Civil art. 3, Ley 153/1887 art. 2) y clasifica: `deroga` | `modifica` | `complementa` | `sin_relación`. Orden de evaluación que el LLM debe seguir:
+
+   a. **¿Derogación expresa?** La nueva dice "deroga X". Si sí, FIN. Aplica aunque sea general deroga especial (la derogación expresa prevalece sobre la regla invertida del art. 3 CC).
+   b. **¿Hay incompatibilidad material?** Comparar resúmenes. Si la nueva contradice la materia de la anterior sin decirlo, hay derogación tácita. Si no hay incompatibilidad, el resultado es `complementa` o `sin_relación` y termina el análisis.
+   c. **Naturaleza y temporalidad**: identificar si cada norma es general o especial (de la metadata o inferida del resumen) y cuál es posterior por fecha de expedición.
+   d. **Aplicar la regla**:
+      - **General posterior + especial anterior sin derogación expresa**: la especial sobrevive. **No deroga**. Es la regla invertida del art. 3 CC colombiano (a diferencia de España y otros sistemas, en Colombia la lex specialis derogat legi generali solo es la regla en sentido inverso, salvo derogación expresa de la general).
+      - **Especial posterior + general anterior con incompatibilidad**: la especial posterior SÍ deroga a la general en el punto de contradicción (art. 3 CC: la preferencia de la especial incluye la derogación tácita en lo contradictorio, no solo complementariedad).
+      - **Misma naturaleza con incompatibilidad**: la posterior deroga a la anterior en lo incompatible (art. 2 Ley 153/1887: "La ley posterior deroga tácitamente a la anterior, en todo o en parte, cuando sean incompatibles").
+   e. **Alcance**: determinar si la derogación es total (toda la materia) o parcial (solo lo incompatible).
+   f. **Si hay duda entre las reglas o la incompatibilidad es ambigua**: marcar para revisión humana en lugar de decidir automáticamente.
+
+4. Si el LLM clasifica `deroga` o `modifica`, se setea un flag `posible_derogacion_implicita_por` en la norma vieja. El Paso 4 del RAG lo lee y lo reporta como advertencia al usuario, indicando la cadena lógica: qué tipo de derogación se detectó y por qué.
+
+Costo: el pipeline de ingesta completo para la ley nueva más una ronda de LLM por cada candidata del top-k. Típicamente ~$0.50-1.00 por ley nueva. Las leyes de SUIN son ~50/mes → ~$25-50/mes en API. Se ejecuta en background sin intervención del usuario. Falsos positivos son aceptables (es solo una advertencia, no una derogación automática). Falsos negativos: el disclaimer de "última sync" los cubre parcialmente.
+
+El SQL se prefiere sobre el vector search porque es determinista: si SUIN dice "derogada por Ley 2297", eso viene de un texto jurídico explícito. El vector search es probabilístico y puede confundir una mención casual con una derogación real. El vector solo se usa como safety net, no como fuente primaria de vigencia.
 
 **Paso 5 — Visión global vía resúmenes (opcional)**
 Se dispara cuando la pregunta es de alto nivel o comparativa (ej. "¿Cómo ha evolucionado la jurisprudencia sobre X?"). El agente usa `search_docs(resumen_query, k=5)` para obtener los resúmenes de los documentos más relevantes según el Índice Documental. Si un documento es fundamental, puede leerlo completo mediante `read_section(doc_id, 1, ultimo_caracter)`.
@@ -202,13 +254,27 @@ El agente entrega todo el contexto recuperado al LLM generador y le instruye:
 
 **Paso 7 — Citation Grounding (verificación mecánica de citas)**
 Antes de entregar la respuesta al usuario, cada cita es verificada mecánicamente:
-1. Para cada cita en la respuesta, se extrae el texto real del rango citado usando `read_section(doc_id, inicio, fin)`.
-2. Un LLM pequeño y barato de proveedor distinto al agente principal (ej. Gemini Flash si el agente usa DeepSeek) recibe la afirmación y el texto fuente real y determina si la afirmación se sostiene.
-3. Si una cita no pasa la verificación, el agente principal recibe el flag y corrige (máximo 2 rondas).
-4. Si tras 2 rondas una cita sigue sin pasar, se entrega con advertencia explícita: "Esta cita no pudo ser verificada mecánicamente contra la fuente."
-Este paso elimina el sesgo de autocorrección: no es el mismo modelo revisándose a sí mismo, sino un modelo externo comparando dos textos objetivos.
+
+**Citation Grounding v2: verifica texto Y metadatos.**
+
+Una cita en una respuesta jurídica puede referirse a dos cosas distintas:
+- **El texto de la unidad citada** (ej. "el Artículo 5 establece que..."): se extrae del Índice 2 con `read_section(doc_id, inicio, fin)`.
+- **Un metadato del documento** (ej. "el Decreto 1080 fue derogado por la Ley 2297"): se extrae del Índice 1 consultando `derogado_por`, `modificado_por`, `inexequible_por` en la base de datos.
+
+El verificador determina de qué tipo es cada cita y valida contra la fuente correspondiente. Si la afirmación dice "fue derogada por X", no busca "derogada" en el texto del artículo — busca el flag `derogado_por` en el metadato. Esto cierra la grieta de poder afirmar correctamente algo que el Citation Grounding v1 (solo texto) rechazaba.
+
+**Mecanismo de verificación:**
+
+1. Para cada cita en la respuesta, se determina el tipo (texto vs metadato) según el `field` que cita: si la cita es `[Doc X, rango 1234-5678]` → texto; si es `[Doc X, derogado_por: 'Ley 2297']` → metadato.
+2. Se extrae la fuente real: `read_section(doc_id, inicio, fin)` para texto, o `db.query(metadato)` para el flag.
+3. Un LLM en **sub-sesión limpia** (mismo modelo, contexto nuevo sin el razonamiento previo del agente principal) recibe la afirmación y la fuente real, y determina si la afirmación se sostiene. La sub-sesión limpia evita el sesgo autoconfirmatorio del modelo que ya razonó la respuesta — no es un modelo distinto, es el mismo modelo sin memoria de su propio razonamiento anterior.
+4. Si una cita no pasa la verificación, el agente principal recibe el flag y corrige (máximo 2 rondas).
+5. Si tras 2 rondas una cita sigue sin pasar, se entrega con advertencia explícita: "Esta cita no pudo ser verificada mecánicamente contra la fuente."
+
+**Decisión de implementación**: el verificador corre en el mismo proveedor y modelo que el agente principal, pero en una sub-sesión sin contexto. Esto elimina el sesgo autoconfirmatorio sin duplicar la complejidad operacional (1 sola API, 1 sola factura, 1 sola SDK).
 
 ##### Notas técnicas
+- **Research informing this design**: el flujo de 7 pasos de Fase B incorpora evidencia de PAKTON (arXiv:2506.00608, EMNLP 2025) sobre chunking contextual y refinamiento iterativo, y de L-MARS (arXiv:2509.00761) sobre verificación por juez en el bucle. No implementamos ninguno como framework; extrajimos los principios y los integramos en nuestro RAG y en el verificador. Detalle en `AGENT_ROADMAP.md` y §11.3.
 - **Reranker**: después de recuperar 20 unidades, un modelo cross-encoder (ej. BGE-Reranker) los reordena por pertinencia real. Con corpus de 100K+ documentos, los 20 resultados iniciales pueden incluir ruido; el reranker filtra eso. Costo estimado: ~$0.0001 por consulta.
 - **Resúmenes con LLM**: se generan durante la ingesta inicial, estructurados por sección con proposiciones jurídicas clave y sus artículos. Son parte integral del Índice Documental desde el día uno.
 - **Modelo de embeddings**: BGE-M3 (568M params, 1024 dims, dense + sparse nativo, 8192 tokens de contexto).
@@ -334,29 +400,58 @@ Una skill es un archivo `.md` (como el estándar de agent skills) que contiene:
 
 ## 9. Agentes
 
-### 9.1 Arquitectura: Agente único + skills dinámicas + sub-agentes ✅
+### 9.1 Arquitectura: 3 capas, 1 agente cara al usuario
 
-**El usuario interactúa con un solo agente ("Worgena").** No elige entre múltiples agentes. La especialización se logra mediante skills cargadas a demanda, no mediante agentes separados.
+**El usuario interactúa con un solo agente ("Worgena").** No elige entre múltiples agentes cara al usuario. Pero la implementación interna es una arquitectura de 3 capas, cada una con un rol distinto.
 
-**Sub-agentes:** sesiones temporales creadas solo para tareas pesadas en paralelo (ej: `delegate_task("due-diligence", input)`). Se crean, procesan, devuelven resultado, y se destruyen. No son persistentes ni visibles para el usuario.
+| Capa | Nombre | Quién la implementa | Cuándo corre |
+|---|---|---|---|
+| **1 — Workflow engine** | Ejecuta workflows ya definidos. Recorre el grafo, persiste estado, maneja transiciones, reintenta. | Código determinista en TypeScript | Mientras la tarea esté activa |
+| **2 — Intake router** | Recibe input nuevo, decide QUÉ workflow instanciar y con qué parámetros. Clasifica + configura. | LLM liviano (DeepSeek Flash) | Una vez al recibir input |
+| **3 — Specialist agents** | Ejecutan nodos específicos del workflow. Cada uno con prompt corto, tools acotadas, contexto limpio. | LLMs por nodo (liviano o robusto) | Cuando un nodo los requiere |
 
-**Recomendación técnica: agente único con personalidad dinámica.**
+**Analogía del restaurante**: Capa 2 = el mesero (decide qué se pide y lo manda a la línea correcta), Capa 1 = la cocina con sus protocolos (sigue la receta paso a paso), Capa 3 = los cocineros especialistas (fogonero, salsero, parrillero).
 
-| | Agente único + skills | Múltiples agentes con memoria individual |
+El usuario ve un solo "Worgena" — la complejidad de las 3 capas es interna. Los specialists existen solo como parte de la ejecución de un workflow; no son persistentes ni visibles al usuario final.
+
+**Workflows como el producto**: cada firma configura sus propios workflows sobre el motor común. Por eso el motor es propio (no LangGraph) y el DSL es versionable. Detalles completos en `AGENT_ROADMAP.md` §5.3, §5.4, §6.1.
+
+### 9.2 Tool, Skill y Subagente: tres cosas distintas
+
+| Concepto | Qué es | Tiene LLM propio |
 |---|---|---|
-| **Simplicidad** | Un solo loop, una sola memoria | N loops, N memorias, orquestación compleja |
-| **Contexto** | Skills cargan instrucciones a demanda, sin saturar el system prompt | Cada agente tiene su system prompt fijo en contexto siempre |
-| **Memoria** | Unificada — el agente recuerda todo de todas las tareas | Fragmentada — el agente contable no sabe lo que hizo el legal |
-| **Costo de implementación** | Skills son archivos `.md` (ya lo tienes con AGENTS.md) | Requiere sistema de orquestación multi-agente |
-| **UX** | El usuario habla con "Worgena", no con 5 agentes distintos | El usuario tiene que elegir qué agente invocar |
+| **Tool** | Función pura, sin razonamiento. Recibe input, devuelve output. | No |
+| **Skill** | Paquete versionado de instrucciones + código + recursos. Cargado bajo demanda cuando la tarea lo requiere. | No |
+| **Subagente** | Agente hijo con contexto limpio, hace su trabajo y reporta al padre. | Sí (liviano o robusto) |
 
-**Conclusión:** Un solo agente con skills cargables a demanda + memoria unificada. Las skills definen personalidad y tools para cada tarea. Si en el futuro se necesita paralelismo real (múltiples agentes trabajando simultáneamente), se implementa como sub-agentes con delegación (ver §10), no como agentes independientes que el usuario debe gestionar.
+Los specialists de Capa 3 son subagentes. Las topic-based policies son skills. Las funciones en `src/agent/tools.ts` son tools. Detalles en `AGENT_ROADMAP.md` §5.7.
 
-### 9.2 Preguntas abiertas sobre Agentes
-- ~~¿Agente único o múltiples?~~ → Agente único + skills dinámicas ✅
-- ~~¿Los agentes se comparten dentro de la firma?~~ → Las skills sí. El agente es uno solo.
-- ~~¿Un espacio puede tener múltiples agentes?~~ → No aplica. Un agente, múltiples skills.
-- ~~¿La memoria es unificada o fragmentada?~~ → Unificada ✅
+### 9.3 Memoria: 4 tipos, no 1
+
+| Tipo | Alcance | Persistencia |
+|---|---|---|
+| **Working** | Conversación actual, en el context window | En runtime, no se persiste |
+| **Episodic** | Sesiones previas sobre el mismo caso | Por caso, recuperable por similitud |
+| **Semantic** | Perfil de firma/cliente, preferencias | Por tenant, editable por usuario |
+| **Procedural** | Cómo hace las cosas esta firma (templates, checklists) | Por tenant, editable, versionado |
+
+Cada tipo tiene su propia infraestructura, política de retención y caso de uso. No se mezclan en una sola "memoria unificada". Detalles en `AGENT_ROADMAP.md` §5.1.
+
+### 9.4 Preguntas abiertas sobre Agentes
+- ~~¿Agente único o múltiples?~~ → 1 cara al usuario + 3 capas internas (engine, intake, specialists) ✅
+- ~~¿Los agentes se comparten dentro de la firma?~~ → Las skills sí. El motor y los specialists los comparte el sistema.
+- ~~¿Un espacio puede tener múltiples agentes?~~ → No aplica. Un agente cara al usuario, múltiples skills y workflows.
+- ~~¿La memoria es unificada o fragmentada?~~ → **4 tipos separados**, no una sola memoria unificada ✅
+
+### 9.5 Referencias
+
+Detalles arquitectónicos completos en `AGENT_ROADMAP.md`:
+- §5.1 Memoria 4 tipos
+- §5.3 Arquitectura 3 capas
+- §5.4 Custom DSL (no LangGraph)
+- §5.5 Multi-model routing
+- §5.6 Verificador en sub-sesión
+- §5.7 Tool vs Skill vs Subagente
 
 ---
 
@@ -375,120 +470,62 @@ Ejemplo: un agente "Investigador" busca jurisprudencia, un agente "Redactor" pro
 
 ## 11. Workflow Engine
 
-Orquestación de comportamiento por defecto de todos los agentes. No configurable por el usuario, sino por el software.
+Motor que ejecuta los workflows de la firma cuando el agente los invoca. Es uno de los componentes del sistema agéntico (junto con memoria, herramientas, modelos). El usuario no interactúa con él directamente — interactúa con el agente Worgena, que usa workflows cuando la tarea lo requiere.
 
-### 11.1 Investigación: PAKTON y L-MARS
+**Nota**: este §11 describe QUÉ hace el motor de workflows. El detalle arquitectónico (DSL, executor, primitivas no negociables, sprints) está en `AGENT_ROADMAP.md` §5 y §6. Acá se documenta la responsabilidad, los límites, y la investigación previa que informó las decisiones.
+
+### 11.1 Responsabilidad del motor
+
+- Ejecutar workflows registrados, uno por tarea activa.
+- Recorrer el grafo de nodos, persistir el estado entre pasos.
+- Manejar transiciones explícitas, reintentos con idempotencia, y pausa para HITL.
+- Producir logs estructurados por nodo (para audit, observabilidad, debugging).
+- Atribuir costo por Agent ID, Task ID, Tenant ID.
+- Versionar el schema de workflows (migraciones al cargar workflows viejos).
+
+### 11.2 Lo que el motor NO hace (fronteras explícitas)
+
+Para evitar ambigüedad con el resto del sistema:
+
+- **No clasifica el input ni decide qué workflow correr.** Eso es trabajo del Intake Router (Capa 2 de la arquitectura agéntica).
+- **No ejecuta los pasos de cada nodo.** Eso es trabajo de los Specialist Agents (Capa 3).
+- **No ingiere documentos ni hace retrieval.** Eso es trabajo de la Arquitectura Híbrida Integrada (§3.2).
+- **No verifica la corrección sustantiva de las salidas.** Eso es trabajo del verificador en sub-sesión (ver §3.2 Paso 7 Citation Grounding v2 y `AGENT_ROADMAP.md` §5.6).
+
+### 11.3 Investigación previa: PAKTON y L-MARS (referencia, no diseño)
+
+Antes de diseñar el motor, estudiamos dos frameworks académicos sobre RAG multi-agente para legal. **No implementamos ninguno como framework**; extrajimos la evidencia válida y la integramos en el lugar correcto del sistema.
 
 #### PAKTON (arXiv:2506.00608, EMNLP 2025)
-Framework multi-agente open-source para revisión de contratos largos con 3 agentes:
 
-| Agente | Rol | Equivalente en nuestro engine |
-|---|---|---|
-| **Archivist** | Ingesta del documento, parsing jerárquico (árbol de secciones), 3 tipos de chunking (nodo, ancestro, descendiente), embeddings con metadatos | **Ingesta** — Arquitectura Híbrida Integrada Fase A |
-| **Interrogator** | Loop iterativo de preguntas→respuestas→refinamiento. Genera reporte con: título, razonamiento jurídico, hallazgos, gaps de conocimiento, citas. Para cuando está seguro o alcanza max turns. | **Generación + Refinamiento** — nuestro agente principal con loop de steps |
-| **Researcher** | Retrieval híbrido (BM25 + dense + RRF + LightRAG), reranker cross-encoder, MCP para fuentes externas | **Búsqueda** — nuestros tools de search_web, read_file, search_units |
+Framework multi-agente para revisión de contratos largos con 3 agentes (Archivist, Interrogator, Researcher).
 
-**Hallazgos clave:**
-- Model-independent: reduce la brecha entre LLMs a <4% F1. DeepSeek V3 con PAKTON = 81.9% F1.
-- El loop iterativo del Interrogator genera follow-up questions hasta estar seguro.
-- Chunking contextual (ancestor-aware + descendant-aware) supera a chunking plano.
+**Qué aprendimos y dónde aplicarlo**:
+
+- **Chunking contextual** (ancestor-aware + descendant-aware) → integrado en §3.2 Fase A (chunking PAKTON con ancestor + sibling + predecessor).
+- **Refinamiento iterativo** (el Interrogator genera follow-ups hasta estar seguro) → integrado en §3.2 Fase B (loop de 7 pasos con Pasos 1-5 de búsqueda y refinamiento).
+- **3 agentes con loops separados** → NO aplicamos. Contradice nuestra decisión de 3 capas (engine / intake / specialists) que es arquitectónicamente distinta.
 - **Código abierto:** github.com/petrosrapto/PAKTON
 
 #### L-MARS (arXiv:2509.00761)
+
 Sistema multi-agente para QA legal con búsqueda web agéntica.
 
-| Componente | Rol |
-|---|---|
-| **Query Decomposition** | Descompone la pregunta en sub-problemas estructurados |
-| **Agentic Web Search** | Búsqueda web agéntica (no RAG pasivo sobre corpus fijo) |
-| **Verification Agent** | **"Juez en el bucle"** — verifica cada pieza de evidencia antes de usarla |
-| **Synthesis** | Sintetiza respuesta con citas verificables |
+**Qué aprendimos y dónde aplicarlo**:
 
-**Hallazgos clave:**
-- 96% accuracy en LegalSearchQA (38% de mejora sobre zero-shot).
-- La verificación es el diferenciador: sin el juez, el modelo alucina información desactualizada.
-- En tareas de razonamiento puro (Bar Exam), el retrieval no ayuda. Solo sirve cuando se necesita información actualizada.
+- **Verification Agent como "juez en el bucle"** → integrado en §3.2 Paso 7 (Citation Grounding v2) y en `AGENT_ROADMAP.md` §5.6 (verificador en sub-sesión).
+- **96% accuracy en LegalSearchQA** cuando se combina retrieval + verificación → confirma que la verificación es el diferenciador sobre zero-shot.
+- **El retrieval no ayuda en razonamiento puro** (Bar Exam sin contexto actualizado) → el motor solo dispara retrieval cuando es necesario, no siempre.
 - **Código abierto:** github.com/boqiny/L-MARS
 
-### 11.2 Diseño final para nuestro Workflow Engine
+#### Lo que NO tomamos de PAKTON ni L-MARS
 
-**No implementamos PAKTON ni L-MARS como frameworks. Extraemos 4 principios validados académicamente y los integramos en nuestro loop de agente existente:**
+- **Internal Quality Review** (LLM que se autocorrige en el mismo contexto): L-MARS lo proponía, nosotros lo **rechazamos** por sesgo confirmatorio. El LLM que ya razonó una respuesta, al revisarla en el mismo contexto, valida lo que dijo, no lo que la fuente dice. En su lugar usamos un **verificador en sub-sesión** sin acceso al contexto del productor.
+- **3x llamadas por consulta**: ambos frameworks usan agentes con ReAct loops separados. Multiplica el costo y la latencia. Nuestro diseño mantiene el patrón producer/verifier (1 sesión productor + 1 sesión verificador) sin replicar loops completos.
 
-#### Principio 1: Internal Quality Review (de L-MARS, reinterpretado)
+### 11.4 Configuración por la firma
 
-Antes de mostrar la respuesta al usuario, el agente ejecuta una revisión interna de calidad sobre su propio output. No es un agente separado — es un paso adicional en el loop:
-
-```
-Step N:   Agente genera respuesta con citas
-Step N+1: [QUALITY REVIEW] El mismo agente recibe instrucción interna:
-          "Revisa tu respuesta anterior. ¿Hay afirmaciones sin fuente?
-           ¿Las citas son correctas en formato? ¿El tono es adecuado?
-           ¿Hay contradicciones internas? Si encuentras errores, corrige."
-Step N+2: Agente entrega respuesta revisada al usuario.
-```
-
-- **Modelo:** DeepSeek V4 Flash (mismo modelo, prompt distinto)
-- **Costo adicional:** 1 llamada extra por respuesta (~$0.0008)
-- **Máximo:** 2 intentos de revisión. Si tras 2 correcciones sigue con problemas, entrega con advertencia.
-
-**Lo que SÍ detecta:** omisiones, errores de formato, contradicciones internas, tono inadecuado, afirmaciones sin fuente evidente.
-
-**Lo que NO detecta:** citas cuyo formato es correcto pero cuyo contenido no respalda la afirmación. Ejemplo: el agente escribe "el artículo 234 establece que la sanción es de 5 años" y cita `caracteres 15200-17200`. El formato es correcto, parece real. Pero el rango 15200-17200 podría hablar de otra cosa. El modelo no lo verificará porque ya "cree" que su afirmación es correcta. Para eso existe el Principio 4.
-
-#### Principio 2: Chunking Contextual Estructural (de PAKTON)
-
-Para la Arquitectura Híbrida Integrada, usamos 3 niveles de chunking con metadatos de sección:
-
-| Nivel | Qué contiene | Para qué |
-|---|---|---|
-| Nodo aislado | El texto de un artículo/considerando/cláusula individual | Búsqueda precisa de unidades específicas |
-| Ancestro + nodo | La sección + su título padre y contexto jerárquico | Desambiguación y comprensión de estructura |
-| Descendientes | Una sección con todas sus subsecciones | Razonamiento sobre provisiones compuestas |
-
-Cada unidad lleva metadatos: `doc_id`, `seccion`, `rango_inicio`, `rango_fin`, `tribunal`, `fecha`, `unit_type`, `unit_number`, `parent_unit_id`.
-
-#### Principio 3: Confidence Gating (de PAKTON Interrogator)
-
-El agente evalúa su propio nivel de confianza antes de responder. Si no está seguro:
-
-1. **Confianza alta:** entrega respuesta directamente.
-2. **Confianza media:** busca más información (más unidades, web search).
-3. **Confianza baja:** pide clarificación al usuario. No adivina.
-
-El agente ya tiene `<scratchpad>` para razonar. Agregamos un paso: después del scratchpad, asigna un nivel de confianza explícito (HIGH/MEDIUM/LOW) y actúa según la regla.
-
-#### Principio 4: Citation Grounding — Verificación mecánica de citas
-
-Este principio ataca el error más grave en investigación legal: citar un rango de caracteres que existe, que parece correcto, pero cuyo contenido real no respalda lo que el agente afirma. El modelo no puede detectarlo solo con autorrevisión (Principio 1) porque ya "cree" que su afirmación es correcta.
-
-**Qué hace:** un proceso automático que, para cada cita en la respuesta, extrae mecánicamente el rango citado y compara afirmación contra fuente real.
-
-```
-Para cada cita en la respuesta del agente:
-  1. Extraer el texto real del rango citado:
-     read_section(doc_id, inicio, fin) → texto fuente
-  2. Comparar la afirmación del agente contra el texto fuente real:
-     Se envía a un LLM (modelo pequeño/barato, proveedor distinto):
-     "Afirmación: [texto de la afirmación]
-      Fuente real (caracteres 15200-17200): [texto extraído del almacén]
-      ¿La afirmación se sostiene con el texto fuente? Responde SÍ/NO y explica."
-  3. Si la afirmación no se sostiene → flag de error.
-     El agente principal recibe el flag y corrige la cita o la afirmación.
-```
-
-**Decisiones de implementación:**
-- **Modelo:** un LLM pequeño y barato de proveedor distinto al agente principal (ej. Gemini Flash si el agente usa DeepSeek). Esto elimina el sesgo de autocorrección del mismo modelo.
-- **Costo:** ~$0.00005 por cita verificada. Con ~3 citas por respuesta, ~$0.00015 adicionales.
-- **Máximo:** 2 rondas de corrección. Si tras 2 rondas una cita sigue sin pasar, se entrega con advertencia explícita: "Esta cita no pudo ser verificada mecánicamente contra la fuente."
-- **Integración en Fase B:** Paso 7 del flujo de consulta (ver §3.2, Fase B).
-
-**Lo que SÍ detecta:** citas cuyo rango existe pero cuyo contenido no respalda la afirmación; citas a rangos que pertenecen a otro documento; afirmaciones factualmente incorrectas sobre el contenido de una fuente.
-
-### 11.3 ¿Por qué no implementamos PAKTON ni L-MARS completos?
-
-PAKTON usa 3 agentes con ReAct loops separados = 3x llamadas por consulta. Contradice nuestra decisión de arquitectura (agente único + skills). L-MARS está diseñado para web search legal, no para análisis documental interno. El 80% de su código no aplica. Ambos son académicos, no production-ready.
-
-Tomamos la evidencia científica de lo que funciona (verificación mecánica de citas reduce alucinaciones graves, chunking jerárquico mejora retrieval, refinamiento iterativo produce mejores respuestas, revisión de calidad corrige omisiones) y lo implementamos como ~120 líneas en nuestro loop.
+Los workflows son el producto: cada firma configura los suyos (en D6, post-MVP). Hoy Worgena viene con un set mínimo. El catálogo es versionable y editable — los workflows se guardan en DB, no en código, y se modifican sin redeploy. Detalles del DSL y de la UI de configuración en `AGENT_ROADMAP.md` §5.4 y §6.3.
 
 ---
 
@@ -542,20 +579,20 @@ Cada carpeta/subcarpeta puede tener:
 
 | Funcionalidad | Estado actual | Meta | Decisión |
 |---|---|---|---|
-| Chat con agente | ✅ Implementado | Agente único + skills dinámicas | Opción A ✅ |
+| Chat con agente | ✅ Implementado | 1 cara al usuario + 3 capas internas (engine, intake, specialists) | ✅ |
 | Lienzo Word/Excel | ✅ Implementado | OK | — |
 | Lienzo HTML (dashboards) | ✅ Implementado | OK | — |
 | Lienzo texto nativo | ❌ | Editor de bloques (ProseMirror/TipTap) | ✅ |
 | Tabular Review | ✅ Batch básico | Workers paralelos, UI dedicada | — |
 | Investigación web | ✅ DuckDuckGo + Apify | + scraping curado | — |
 | Investigación interna | ✅ read_file | Arquitectura Híbrida Integrada | — |
-| Memoria | ✅ 3 tiers | Unificada (agente único) | ✅ |
+| Memoria | ✅ 3 tiers | 4 tipos separados (working, episodic, semantic, procedural) | ✅ |
 | Espacios | ✅ | Migrar a carpetas jerárquicas | ✅ |
 | Bóvedas | ❌ | Colecciones de docs/artefactos asociadas a carpetas. Sync bajo demanda | ✅ |
 | Conexiones externas | ❌ | 12 integraciones planeadas | — |
 | Skills | ❌ | .md en DB, invocación dual (manual/auto) | ✅ |
-| Workflows | ❌ | Orquestación con verification steps | — |
-| Workflow Engine | ❌ | 4 principios (quality review + chunking + confidence gating + citation grounding) | ✅ |
+| Workflows | ❌ | Motor propio con DSL, configurables por firma | — |
+| Workflow Engine | ❌ | Motor propio, 3 capas, producer/verifier en sub-sesión, multi-model | ✅ |
 | Modo Computador | ❌ Parcial | Mini-apps + browser persistente + tareas programadas | ✅ |
 | Monitores | ❌ | Dashboard interno (actividad) y externo (novedades) | ✅ |
 | Plugins | ❌ | Paquetes de skills + conectores + workflows por rol profesional | ✅ |

@@ -9,6 +9,8 @@ export interface StepLog {
   endTime?: number;
   durationMs?: number;
   messagesCount: number;
+  /** B6: cuenta de mensajes DESPUÉS del context-manager (lo que se mandó al LLM). */
+  optimizedMessagesCount?: number;
   model: string;
   apiCallDurationMs?: number;
   promptTokens?: number;
@@ -18,6 +20,10 @@ export interface StepLog {
   promptSent?: unknown;
   /** JSON crudo de la respuesta del LLM (choices, finish_reason, logprobs, etc.). */
   rawResponse?: unknown;
+  /** B7: prompt enviado al resumidor (cuando el context-manager corrió). */
+  summarizerPromptSent?: unknown;
+  /** B7: respuesta cruda del resumidor (cuando el context-manager corrió). */
+  summarizerRawResponse?: unknown;
   toolCalls: Array<{
     name: string;
     args: Record<string, unknown>;
@@ -96,20 +102,35 @@ export async function completeStepLog(
   totalTokens: number,
   toolCalls: ToolCallLog[],
   promptSent?: unknown,
-  rawResponse?: unknown
+  rawResponse?: unknown,
+  options?: {
+    /** B6: mensajes optimizados (post context-manager). */
+    optimizedMessagesCount?: number;
+    /** B7: lo que se mandó al resumidor del context-manager, si corrió. */
+    summarizerPromptSent?: unknown;
+    /** B7: respuesta cruda del resumidor del context-manager, si corrió. */
+    summarizerRawResponse?: unknown;
+  }
 ): Promise<void> {
   const endTime = Date.now();
   const durationMs = endTime - log.startTime;
   const promptSentJson = promptSent !== undefined ? JSON.stringify(promptSent) : null;
   const rawResponseJson = rawResponse !== undefined ? JSON.stringify(rawResponse) : null;
+  const summarizerPromptJson = options?.summarizerPromptSent !== undefined
+    ? JSON.stringify(options.summarizerPromptSent) : null;
+  const summarizerRawJson = options?.summarizerRawResponse !== undefined
+    ? JSON.stringify(options.summarizerRawResponse) : null;
+  const optimizedCount = options?.optimizedMessagesCount ?? null;
 
-  // Persistir el step + tool calls en una transacción.
+  // Persistir el step + tool calls en una sola transacción.
   await runInTransaction(async (run) => {
     run(
       `UPDATE step_logs
        SET end_time = ?, duration_ms = ?, api_call_duration_ms = ?,
            prompt_tokens = ?, completion_tokens = ?, total_tokens = ?,
-           status = ?, prompt_sent = ?, raw_response = ?
+           status = ?, prompt_sent = ?, raw_response = ?,
+           optimized_messages_count = ?,
+           summarizer_prompt_sent = ?, summarizer_raw_response = ?
        WHERE id = ?`,
       [
         endTime,
@@ -121,6 +142,9 @@ export async function completeStepLog(
         'completed',
         promptSentJson,
         rawResponseJson,
+        optimizedCount,
+        summarizerPromptJson,
+        summarizerRawJson,
         log.id,
       ]
     );
@@ -152,6 +176,9 @@ export async function completeStepLog(
   log.totalTokens = totalTokens;
   log.promptSent = promptSent;
   log.rawResponse = rawResponse;
+  log.optimizedMessagesCount = options?.optimizedMessagesCount;
+  log.summarizerPromptSent = options?.summarizerPromptSent;
+  log.summarizerRawResponse = options?.summarizerRawResponse;
   log.toolCalls = toolCalls;
   log.status = 'completed';
 }
@@ -246,6 +273,7 @@ export async function getSessionMetrics(sessionId: string): Promise<SessionMetri
     endTime: r.end_time ? Number(r.end_time) : undefined,
     durationMs: r.duration_ms ?? undefined,
     messagesCount: r.messages_count,
+    optimizedMessagesCount: r.optimized_messages_count ?? undefined,
     model: r.model,
     apiCallDurationMs: r.api_call_duration_ms ?? undefined,
     promptTokens: r.prompt_tokens ?? undefined,
@@ -253,6 +281,8 @@ export async function getSessionMetrics(sessionId: string): Promise<SessionMetri
     totalTokens: r.total_tokens ?? undefined,
     promptSent: r.prompt_sent ? safeJsonParse(r.prompt_sent) : undefined,
     rawResponse: r.raw_response ? safeJsonParse(r.raw_response) : undefined,
+    summarizerPromptSent: r.summarizer_prompt_sent ? safeJsonParse(r.summarizer_prompt_sent) : undefined,
+    summarizerRawResponse: r.summarizer_raw_response ? safeJsonParse(r.summarizer_raw_response) : undefined,
     toolCalls: toolByStep.get(r.step_number) || [],
     status: r.status,
     errorMessage: r.error_message ?? undefined,

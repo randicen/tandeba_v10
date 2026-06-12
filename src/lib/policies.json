@@ -1,0 +1,97 @@
+{
+  "_comment_": "Topic-based access policies. El LLM las consulta como guía ANTES de llamar read_url o download_file. El URL allowlist (ALLOWED_DOMAINS en .env) sigue siendo el backstop hard. Esta lista es soft guidance: el LLM puede ignorarla, pero si la respeta evita visitar sitios no confiables. Refiná libremente — los tests no se rompen porque el contenido es solo referencia, no enforcement runtime.",
+
+  "topics": {
+    "tributario": {
+      "description": "Búsquedas sobre impuestos, DIAN, Estatuto Tributario, normativa fiscal colombiana",
+      "use_these_sites": [
+        "dian.gov.co",
+        "estatuto-tributario.com",
+        "mincit.gov.co"
+      ],
+      "avoid_these_sites": [
+        "facebook.com",
+        "twitter.com",
+        "instagram.com",
+        "tiktok.com",
+        "reddit.com"
+      ],
+      "rationale": "Para temas tributarios, fuentes oficiales y normativa vigente. Redes sociales no son fuentes válidas."
+    },
+
+    "jurisprudencia": {
+      "description": "Búsquedas sobre sentencias, jurisprudencia, decisiones judiciales colombianas",
+      "use_these_sites": [
+        "corteconstitucional.gov.co",
+        "consejodeestado.gov.co",
+        "cortesuprema.gov.co",
+        "consejosuperiorjudicatura.gov.co",
+        "ramajudicial.gov.co"
+      ],
+      "avoid_these_sites": [
+        "blogspot.com",
+        "wordpress.com",
+        "facebook.com",
+        "twitter.com"
+      ],
+      "rationale": "Sentencias y autos de las altas cortes. Blogs personales y redes sociales no son fuentes confiables para jurisprudencia."
+    },
+
+    "laboral": {
+      "description": "Búsquedas sobre derecho laboral, seguridad social, pensiones colombianas",
+      "use_these_sites": [
+        "mintrabajo.gov.co",
+        "ugpp.gov.co",
+        "corteconstitucional.gov.co",
+        "consejodeestado.gov.co"
+      ],
+      "avoid_these_sites": [
+        "facebook.com",
+        "twitter.com",
+        "instagram.com"
+      ],
+      "rationale": "Normativa laboral y jurisprudencia aplicable. Evitar fuentes no oficiales."
+    },
+
+    "comercial": {
+      "description": "Búsquedas sobre derecho comercial, sociedades, contratos mercantiles en Colombia",
+      "use_these_sites": [
+        "supersociedades.gov.co",
+        "camarascomercio.com",
+        "confecamaras.gov.co"
+      ],
+      "avoid_these_sites": [
+        "facebook.com",
+        "twitter.com"
+      ],
+      "rationale": "Registros mercantiles y normativa de sociedades. Redes sociales no son fuentes válidas."
+    },
+
+    "general": {
+      "description": "Búsquedas que no encajan en ningún topic específico. Usar portales de noticias confiables y fuentes oficiales colombianas cuando aplique.",
+      "use_these_sites": [
+        ".gov.co",
+        "eltiempo.com",
+        "semana.com",
+        "larepublica.co"
+      ],
+      "avoid_these_sites": [
+        "facebook.com",
+        "twitter.com",
+        "instagram.com",
+        "tiktok.com"
+      ],
+      "rationale": "Fuentes oficiales y prensa reconocida. Redes sociales no son fuentes válidas para investigación jurídica."
+    }
+  },
+
+  "instructions": {
+    "_comment_": "Estas instrucciones se inyectan en el system prompt del LLM. Editá libremente para refinar el comportamiento.",
+
+    "how_to_use": "ANTES de llamar read_url, download_file, o apify_scrape_url: (1) identificá si el query del usuario encaja en uno de los topics definidos (tributario, jurisprudencia, laboral, comercial, general). (2) Si encaja, preferí los sitios en `use_these_sites` y evitá los de `avoid_these_sites`. (3) Si el sitio que querés visitar está en avoid_these_sites, explicale al usuario por qué y proponé alternativas. (4) Si NO encaja en ningún topic, usá el topic 'general'.",
+
+    "if_no_topic_matches": "Usá el topic 'general' como fallback. Si necesitás un topic nuevo, mencionalo al usuario y sugerí agregarlo al policies.json.",
+
+    "enforcement_note": "Estas policies son GUIDANCE, no enforcement runtime. El URL allowlist (ALLOWED_DOMAINS en .env) sigue siendo el backstop hard. Si un sitio está en avoid_these_sites pero también está en ALLOWED_DOMAINS, el LLM puede accederlo (el allowlist gana), pero debería evitarlo si hay alternativa mejor."
+  }
+}

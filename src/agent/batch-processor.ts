@@ -65,7 +65,7 @@ async function processBatch(
   ).join("\n");
 
   const response = await openai.chat.completions.create({
-    model: "deepseek-v4-flash",
+    model: process.env.OPENCODE_MODEL ?? "deepseek-v4-flash-free",
     temperature: 0,
     messages: [{
       role: "system",

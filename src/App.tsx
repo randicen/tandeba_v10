@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { 
@@ -95,6 +95,38 @@ export default function App() {
   const [isWorkspaceSidebarOpen, setIsWorkspaceSidebarOpen] = useState(false);
   const [criticalError, setCriticalError] = useState<string | null>(null);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+  // Ref espejo del state para que el callback de preview (estabilizado con
+  // useCallback) pueda leer el estado actual sin recrearse.
+  const isLeftSidebarOpenRef = useRef(true);
+  useEffect(() => { isLeftSidebarOpenRef.current = isLeftSidebarOpen; }, [isLeftSidebarOpen]);
+  // Guarda el estado de la sidebar izquierda antes de cerrarla por un preview,
+  // para poder restaurarlo cuando se cierre el preview. null = no hay preview activo.
+  const leftSidebarSavedState = useRef<boolean | null>(null);
+  // Callback estabilizado. Si se recreara en cada render, el useEffect del
+  // WorkspaceSidebar lo detectaría como cambio de dep y entraría en un loop
+  // llamando onPreviewChange repetidamente.
+  const handlePreviewChange = useCallback((hasPreview: boolean) => {
+    if (hasPreview) {
+      if (leftSidebarSavedState.current === null) {
+        leftSidebarSavedState.current = isLeftSidebarOpenRef.current;
+      }
+      setIsLeftSidebarOpen(false);
+    } else if (leftSidebarSavedState.current !== null) {
+      const saved = leftSidebarSavedState.current;
+      leftSidebarSavedState.current = null;
+      if (saved) setIsLeftSidebarOpen(true);
+    }
+  }, []);
+  const closeWorkspaceSidebar = useCallback(() => {
+    setIsWorkspaceSidebarOpen(false);
+    // Al cerrar toda la bóveda, también restaurar la izquierda si fue
+    // ocultada por un preview.
+    if (leftSidebarSavedState.current !== null) {
+      const saved = leftSidebarSavedState.current;
+      leftSidebarSavedState.current = null;
+      if (saved) setIsLeftSidebarOpen(true);
+    }
+  }, []);
   const [navMode, setNavMode] = useState<'chats' | 'spaces'>('chats');
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [activeView, setActiveView] = useState<'home' | 'computer' | 'vaults' | 'tools' | 'customize'>('home');
@@ -356,10 +388,10 @@ export default function App() {
 
       {/* Main Content */}
       {activeSessionDetail ? (
-        <main className="flex-1 flex flex-col min-w-0 bg-white relative z-10">
-          <div className="flex-1 flex flex-col w-full max-w-3xl mx-auto">
-            <header className="flex items-center justify-between gap-3 px-4 sm:px-6 py-2.5 border-b border-gray-100 bg-white shrink-0 z-20">
-              <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700 min-w-0 flex-1">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-white relative z-10">
+          <div className="flex-1 flex flex-col w-full max-w-3xl mx-auto min-h-0">
+            <header className="flex items-center justify-between gap-2 px-3 sm:px-6 py-2.5 border-b border-gray-100 bg-white shrink-0 z-20">
+              <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700 min-w-0 flex-1 overflow-hidden">
                 {activeSessionDetail?.spaceId && (() => {
                   const path: any[] = [];
                   let cur: any = spaces.find((s: any) => s.id === activeSessionDetail.spaceId);
@@ -373,11 +405,11 @@ export default function App() {
                     <>
                       <button
                         onClick={() => { setNavMode('spaces'); setActiveSessionId(null); setActiveSessionDetail(null); setActiveSpaceId(activeSessionDetail.spaceId); setActiveView('home'); }}
-                        className="flex items-center gap-1 text-gray-500 hover:text-gray-900 transition-colors px-1.5 py-0.5 rounded shrink-0"
+                        className="flex items-center gap-1 text-gray-500 hover:text-gray-900 transition-colors px-1.5 py-0.5 rounded shrink-0 min-w-0"
                         title="Volver al Espacio"
                       >
-                        <Folder className="w-3.5 h-3.5" />
-                        <span className="truncate max-w-[260px]">
+                        <Folder className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate min-w-0">
                           {path.map((p, i) => (
                             <span key={p.id}>{i > 0 && <span className="text-gray-300 mx-1">›</span>}{p.name}</span>
                           ))}
@@ -387,7 +419,7 @@ export default function App() {
                     </>
                   );
                 })()}
-                <span className="truncate text-gray-900">{activeSessionDetail.name || 'Conversación'}</span>
+                <span className="truncate min-w-0 text-gray-900 flex-1">{activeSessionDetail.name || 'Conversación'}</span>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 {!isWorkspaceSidebarOpen && (
@@ -470,9 +502,9 @@ export default function App() {
       {activeSessionDetail && isWorkspaceSidebarOpen && (
         <WorkspaceSidebar 
           session={activeSessionDetail} 
-          onClose={() => setIsWorkspaceSidebarOpen(false)}
+          onClose={closeWorkspaceSidebar}
           onUpdate={handleUpdate}
-          onPreviewChange={(hasPreview) => { if (hasPreview) setIsLeftSidebarOpen(false); }}
+          onPreviewChange={handlePreviewChange}
         />
       )}
       </div>
@@ -2302,9 +2334,9 @@ function SpacesMainView({ spaces, sessions, activeSpaceId, onSelectSpace, onCrea
 
   // Space detail view (threads + right panel)
   return (
-    <main className="flex-1 flex flex-col min-w-0 bg-white z-10 w-full">
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 flex flex-col min-w-0">
+    <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-white z-10 w-full">
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           <div className="px-8 md:px-12 py-8 border-b border-gray-100">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
@@ -2361,7 +2393,7 @@ function SpacesMainView({ spaces, sessions, activeSpaceId, onSelectSpace, onCrea
         </div>
 
         {/* Right panel */}
-        <div className="w-[300px] border-l border-gray-200 bg-gray-50/50 shrink-0 hidden lg:flex flex-col">
+        <div className="w-[280px] md:w-[300px] border-l border-gray-200 bg-gray-50/50 shrink-0 hidden md:flex flex-col">
           <div className="p-4 border-b border-gray-200">
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Instrucciones del espacio</h3>
             {editingInstructions !== null ? (
@@ -2487,8 +2519,7 @@ function SpacesMainView({ spaces, sessions, activeSpaceId, onSelectSpace, onCrea
 
   return (
     <>
-    {/* Mobile backdrop for right workspace sidebar */}
-    <div className="fixed inset-0 bg-gray-900/50 z-30 md:hidden transition-opacity" onClick={onClose} />
+    {/* Sin backdrop: en mobile el sidebar absolute (85vw) ya cubre el main visualmente, y un backdrop full-screen bloquea el composer (z-20) que queda debajo. En desktop el sidebar es relative, coexiste con el main, tampoco necesita oscurecimiento. */}
     <aside className={cn("bg-gray-50 md:bg-gray-50/50 border-l border-gray-200 flex flex-col shrink-0 transition-all duration-300 absolute md:relative z-40 right-0 h-full", previewFile ? "w-full md:w-[45vw]" : "w-[85vw] sm:w-[280px] shadow-xl md:shadow-none")}>
       <div className="px-3 sm:px-5 py-4 border-b border-gray-200 flex items-center justify-between bg-white shadow-sm z-10">
         <div className="flex items-center gap-2 overflow-hidden">
@@ -2681,6 +2712,7 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
   const [isProcessingStep, setIsProcessingStep] = useState(false);
   const [optimisticMessage, setOptimisticMessage] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const isSubmittingRef = useRef(false);
   const genRef = useRef(0);
@@ -2691,7 +2723,15 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Scroll directo al fondo del contenedor (no al bottomRef) usando
+    // requestAnimationFrame para asegurar que el DOM ya pintó el contenido
+    // nuevo. Esto evita el "gap" entre el último mensaje y el composer que
+    // aparecía con scrollIntoView({ behavior: 'smooth' }).
+    const id = requestAnimationFrame(() => {
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
   }, [session.messages, isProcessingStep, optimisticMessage]);
 
   const handleHumanResponse = async (toolCallId: string, response: string) => {
@@ -2896,7 +2936,8 @@ function ChatArea({ session, onUpdate, onToggleFiles, disablePolling }: { sessio
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto flex flex-col">
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+        <div className="flex-1" aria-hidden="true" />
         <div className="w-full max-w-3xl mx-auto px-4 sm:px-6 py-8 flex flex-col space-y-8">
           
           {groupedTurns.length === 0 && !isActuallyRunning && (

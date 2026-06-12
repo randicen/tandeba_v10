@@ -26,6 +26,7 @@
     "adm-zip": "^0.5.17",
     "ag-grid-community": "^35.3.0",
     "ag-grid-react": "^35.3.0",
+    "ajv": "^8.17.1",
     "apify-client": "^2.23.1",
     "axios": "^1.16.0",
     "better-sqlite3": "^12.9.0",
@@ -62,7 +63,8 @@
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^14.0.0",
     "vite": "^6.2.3",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

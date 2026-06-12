@@ -2,19 +2,31 @@ import OpenAI from "openai";
 import { v4 as uuidv4 } from "uuid";
 import { executeTool } from "./tools.js";
 import { getCoreMemory, searchEpisodicMemory } from "./memory.js";
+import { ensureContextWindow } from "./context-manager.js";
 import { createStepLog, completeStepLog, failStepLog } from "./logger.js";
+import { generateSystemPromptSection } from "../lib/policy-engine.js";
+import { getUserMessage } from "../lib/llm-errors.js";
 
-// Initialize DeepSeek client using OpenAI API compatibility
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-if (!DEEPSEEK_API_KEY) {
-  throw new Error("DEEPSEEK_API_KEY environment variable is required. Please set it in your .env file.");
+// Initialize OpenCode Zen client using OpenAI API compatibility.
+// OpenCode Zen es un gateway OpenAI-compatible que da acceso a modelos
+// verificados por el equipo de OpenCode, incluyendo DeepSeek V4 Flash Free.
+// Docs: https://opencode.ai/docs/en/zen/
+const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY;
+if (!OPENCODE_API_KEY) {
+  throw new Error("OPENCODE_API_KEY environment variable is required. Get one at https://opencode.ai/auth → billing → API key.");
 }
 
+const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL ?? "https://opencode.ai/zen/v1";
+export const DEFAULT_LLM_MODEL = process.env.OPENCODE_MODEL ?? "deepseek-v4-flash-free";
+
 export const openai = new OpenAI({
-  baseURL: 'https://api.deepseek.com',
-  apiKey: DEEPSEEK_API_KEY,
+  baseURL: OPENCODE_BASE_URL,
+  apiKey: OPENCODE_API_KEY,
   timeout: 120_000,
-  maxRetries: 3
+  // maxRetries: 0. Manejamos retries a nivel del motor/agente, no del SDK.
+  // Si el servidor devuelve 402 Insufficient Balance, no queremos reintentar
+  // 3 veces — el saldo no se va a recuperar solo.
+  maxRetries: 0,
 });
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
@@ -41,7 +53,7 @@ export interface AgentSession {
 
 import { pool } from '../lib/db.js';
 
-const SYSTEM_PROMPT = `You are a sophisticated AI Agent powered by DeepSeek V4 Flash, capable of running complex loops, executing tools, managing memory, and collaborating with humans.
+const SYSTEM_PROMPT = `You are a sophisticated AI Agent powered by DeepSeek V4 Flash, capable of running complex loops, executing tools, managing memory, and collaborating with humans.${generateSystemPromptSection()}
 
 --- TIER 1: Hot Memory (Agent Profile & Fixed Context) ---
 - Role: Enterprise Resource Assistant (Asistente de Recursos Empresariales).
@@ -124,7 +136,22 @@ Usa \`batch_review\` cuando necesites analizar MUCHOS documentos a la vez con la
 - Genera automáticamente un dashboard HTML con los resultados en una tabla.
 - Para pocos documentos (<5) o preguntas complejas que requieran razonamiento, usa read_file y evalúa manualmente.
 
-¡PROHIBICIÓN ESTRICTA! NUNCA uses \`execute_code\` (Python) para generar o manipular DOCX.`;
+¡PROHIBICIÓN ESTRICTA! NUNCA uses \`execute_code\` (Python) para generar o manipular DOCX.
+
+REGLAS DE APROBACIÓN HUMANA (HITL — Dim 1, Item 1.3):
+Las siguientes tools son DESTRUCTIVAS y requieren aprobación humana explícita antes de ejecutarse:
+  - delete_file: elimina archivos del workspace (sin undo).
+  - batch_review: procesa todos los documentos del workspace con un sub-LLM.
+  - download_file: cuando la URL es externa al workspace del usuario (posible exfiltración).
+
+FLUJO OBLIGATORIO para esas tools:
+  1. Llama la tool normalmente SIN el flag "__human_approved".
+  2. Si la respuesta contiene "Debés pedir aprobación humana antes de ejecutar esta tool", extraé la pregunta EXACTA incluida en el error.
+  3. Llama ask_human con esa pregunta exacta.
+  4. Si el humano responde "sí" / "ok" / "hazlo" / "approved" / "dale": reintentá la tool agregando "__human_approved": true a los args.
+  5. Si el humano dice "no" / "cancel": NO reintentes. Informá al usuario que la acción fue cancelada.
+
+NO llames estas tools destructivas "de prepo" sin pasar por ask_human. NO modifiques la pregunta pre-formulada.`;
 
 export async function createSession(name?: string, spaceId?: string): Promise<AgentSession> {
   const id = uuidv4();
@@ -400,7 +427,7 @@ export async function toOpenAIMessages(messages: AgentMessage[]): Promise<OpenAI
     orderedMessages.push(m);
   }
 
-  const windowedMessages = applySlidingWindow(orderedMessages);
+  const windowedMessages = orderedMessages;
 
   // Inject 3-Tier Memory into the System Prompt dynamically
   if (windowedMessages.length > 0 && windowedMessages[0].role === "system") {
@@ -436,88 +463,46 @@ export async function toOpenAIMessages(messages: AgentMessage[]): Promise<OpenAI
   return windowedMessages;
 }
 
-// Memory and Sliding Window (Context Limit)
-function applySlidingWindow(messages: OpenAI.Chat.ChatCompletionMessageParam[]): OpenAI.Chat.ChatCompletionMessageParam[] {
-  const MAX_CHARS = 120_000; // Approx 30,000 tokens limit for safety
-  
-  const getChars = (msg: any) => JSON.stringify(msg).length;
-  let totalChars = messages.reduce((acc, msg) => acc + getChars(msg), 0);
-  
-  if (totalChars <= MAX_CHARS) return messages;
-  
-  const systemPromptMessage = messages[0];
-  let keepMessages: any[] = [];
-  let currentChars = getChars(systemPromptMessage);
-  let i = messages.length - 1;
-  
-  while (i > 0) {
-    let block = [messages[i]];
-    
-    // Group tool messages with their parent assistant tool_calls message
-    if (messages[i].role === 'tool') {
-      let j = i;
-      while (j > 0) {
-        if (messages[j].role === 'assistant' && (messages[j] as any).tool_calls) {
-          break;
-        }
-        j--;
-      }
-      if (j > 0) {
-        block = messages.slice(j, i + 1);
-        i = j;
-      } else {
-        // Parent assistant message was truncated. Drop this block and stop.
-        break;
-      }
-    }
-    
-    let blockChars = block.reduce((acc, msg) => acc + getChars(msg), 0);
-    
-    if (currentChars + blockChars > MAX_CHARS && keepMessages.length > 0) {
-      keepMessages.unshift({
-        role: "system",
-        content: "[System: Older conversation history has been truncated to optimize context memory.]"
-      });
-      break; 
-    }
-    
-    keepMessages.unshift(...block);
-    currentChars += blockChars;
-    i--;
-  }
-  
-  return [systemPromptMessage, ...keepMessages];
-}
+// NOTA: el sliding window con truncado duro fue reemplazado por el context-manager
+// (ver src/agent/context-manager.ts). Ahora la lógica de gestión de ventana de
+// contexto vive en `ensureContextWindow`, llamada desde _stepSessionInner antes
+// de toOpenAIMessages.
 
-const activeExecutions = new Set<string>();
+// B5 FIX: en vez de un Set<string> (que tiene un race entre has() y add()),
+// usamos un Map<sessionId, Promise> con patrón de in-flight. Si llegan dos
+// requests simultáneos para la misma sesión, el segundo recibe la MISMA
+// Promise del primero (no se duplica el step).
+const inflightSteps = new Map<string, Promise<AgentSession>>();
 const stepCounters = new Map<string, number>();
 
 export async function stepSession(sessionId: string): Promise<AgentSession> {
-  const session = await getSession(sessionId);
-  if (!session) throw new Error("Session not found");
-  
-  if (session.status === "waiting_human") {
-    // Cannot proceed without human input.
-    return session;
+  // B5: si ya hay un step corriendo para esta sesión, retornar la MISMA
+  // promise (en vez de saltar el guard y re-ejecutar).
+  const existing = inflightSteps.get(sessionId);
+  if (existing) {
+    console.log(`[AGENT] Session ${sessionId} is already active, returning in-flight promise.`);
+    return existing;
   }
 
-  if (activeExecutions.has(sessionId)) {
-     console.log(`[AGENT] Session ${sessionId} is already active, skipping duplicate step trigger.`);
-     return session;
-  }
-  activeExecutions.add(sessionId);
-
-  try {
+  const promise = (async () => {
+    const session = await getSession(sessionId);
+    if (!session) throw new Error("Session not found");
+    if (session.status === "waiting_human") {
+      return session;
+    }
     return await _stepSessionInner(sessionId, session);
-  } finally {
-    activeExecutions.delete(sessionId);
-  }
+  })().finally(() => {
+    inflightSteps.delete(sessionId);
+  });
+
+  inflightSteps.set(sessionId, promise);
+  return promise;
 }
 
 async function _stepSessionInner(sessionId: string, session: AgentSession): Promise<AgentSession> {
   const stepNumber = (stepCounters.get(sessionId) || 0) + 1;
   stepCounters.set(sessionId, stepNumber);
-  const stepLog = await createStepLog(sessionId, stepNumber, session.messages.length, "deepseek-v4-flash");
+  const stepLog = await createStepLog(sessionId, stepNumber, session.messages.length, DEFAULT_LLM_MODEL);
 
   let toolCycleCount = 0;
   for (let i = session.messages.length - 1; i >= 0; i--) {
@@ -545,11 +530,32 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
 
   try {
     console.log(`[AGENT] Processing step ${stepNumber} for ${sessionId}...`);
-    const openaiMessages = await toOpenAIMessages(session.messages);
+
+    // Context window management: si el historial pasa UMBRAL tokens,
+    // asegura que entre en ventana usando summary monotónico.
+    // Si falla, el step entero falla (sin truncado silencioso).
+    const contextResult = await ensureContextWindow(
+      sessionId,
+      session.messages,
+      openai
+    );
+    const optimizedMessages = contextResult.messages;
+    const summarizerCall = contextResult.summarizerCall;
+    console.log(`[AGENT] Context window: ${session.messages.length} → ${optimizedMessages.length} messages`);
+
+    const openaiMessages = await toOpenAIMessages(optimizedMessages);
+
+    // B6 + B7: payload extra para auditoría. Se construye una sola vez y se
+    // reusa en las 3 llamadas a completeStepLog de este step.
+    const stepLogOptions = {
+      optimizedMessagesCount: optimizedMessages.length,
+      summarizerPromptSent: summarizerCall?.promptSent,
+      summarizerRawResponse: summarizerCall?.rawResponse,
+    };
     console.log(`[AGENT] Calling OpenAI with ${openaiMessages.length} messages`);
     const apiStart = Date.now();
     const response: any = await openai.chat.completions.create({
-      model: "deepseek-v4-flash",
+      model: DEFAULT_LLM_MODEL,
       messages: openaiMessages,
       tools: [
         {
@@ -826,7 +832,8 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
           await completeStepLog(
             sessionId, stepLog,
             apiDuration, promptTokens, completionTokens, totalTokens, toolCalls,
-            openaiMessages, response
+            openaiMessages, response,
+            stepLogOptions
           );
           return session; // Stop the loop for this turn
         } else if (tool_call?.function?.name) {
@@ -908,7 +915,8 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
       await completeStepLog(
         sessionId, stepLog,
         apiDuration, promptTokens, completionTokens, totalTokens, toolCalls,
-        openaiMessages, response
+        openaiMessages, response,
+        stepLogOptions
       );
       return session;
 
@@ -919,7 +927,8 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
       await completeStepLog(
         sessionId, stepLog,
         apiDuration, promptTokens, completionTokens, totalTokens, [],
-        openaiMessages, response
+        openaiMessages, response,
+        stepLogOptions
       );
       return session;
     }
@@ -927,10 +936,14 @@ async function _stepSessionInner(sessionId: string, session: AgentSession): Prom
     console.error("Agent Error:", err);
     await failStepLog(sessionId, stepLog, err.message || String(err));
     session.status = "error";
+    // Si es 402 Insufficient Balance, el usuario ve el mensaje genérico
+    // de mantenimiento en vez del error técnico. El error real (con
+    // status, body, stack) ya se loggeó arriba con console.error.
+    const userFacing = getUserMessage(err);
     const errMsg: AgentMessage = {
       id: uuidv4(),
       role: "assistant",
-      content: "An error occurred during execution: " + err.message
+      content: userFacing
     };
     await addMessageDB(session, errMsg);
     await updateSession(session);

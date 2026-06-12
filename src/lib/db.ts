@@ -149,11 +149,59 @@ function initDB() {
       CREATE INDEX IF NOT EXISTS step_logs_created_at_idx ON step_logs(created_at);
       CREATE INDEX IF NOT EXISTS tool_calls_step_log_id_idx ON tool_calls(step_log_id);
       CREATE INDEX IF NOT EXISTS tool_calls_name_idx ON tool_calls(name);
+
+      -- ============================================================================
+      -- Context window summaries (Worgena)
+      -- ----------------------------------------------------------------------------
+      -- Un summary por sesión que reemplaza los mensajes antiguos cuando el prompt
+      -- pasa de UMBRAL tokens. Se actualiza de forma monotónica (nunca decrece el
+      -- contenido preservado; el LLM solo agrega/edita, no descarta sin razón).
+      -- ============================================================================
+      CREATE TABLE IF NOT EXISTS message_summaries (
+        session_id TEXT PRIMARY KEY,
+        summary TEXT NOT NULL,
+        last_summarized_message_index INTEGER NOT NULL DEFAULT 0,
+        tokens_approx INTEGER NOT NULL DEFAULT 0,
+        updated_at BIGINT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
     `);
 
     // Migraciones seguras (JS, no SQL): agregan columnas si la tabla ya existía
     const spaceColumns = db.prepare("PRAGMA table_info(spaces)").all() as any[];
     const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as any[];
+    const stepLogColumns = db.prepare("PRAGMA table_info(step_logs)").all() as any[];
+
+    // B6: cuenta de mensajes optimizados (después del context-manager) para
+    // distinguir entre "tamaño del historial" y "lo que se mandó al LLM".
+    if (!stepLogColumns.some((c: any) => c.name === 'optimized_messages_count')) {
+      try {
+        db.exec('ALTER TABLE step_logs ADD COLUMN optimized_messages_count INTEGER');
+        console.log('Migration: added optimized_messages_count column to step_logs');
+      } catch (e: any) {
+        console.error('Migration step_logs.optimized_messages_count failed:', e.message);
+      }
+    }
+
+    // B7: captura forense de la llamada al resumidor. Permite auditar "qué vio
+    // el resumidor" vs "qué produjo", crítico para detectar alucinaciones.
+    if (!stepLogColumns.some((c: any) => c.name === 'summarizer_prompt_sent')) {
+      try {
+        db.exec('ALTER TABLE step_logs ADD COLUMN summarizer_prompt_sent TEXT');
+        console.log('Migration: added summarizer_prompt_sent column to step_logs');
+      } catch (e: any) {
+        console.error('Migration step_logs.summarizer_prompt_sent failed:', e.message);
+      }
+    }
+    if (!stepLogColumns.some((c: any) => c.name === 'summarizer_raw_response')) {
+      try {
+        db.exec('ALTER TABLE step_logs ADD COLUMN summarizer_raw_response TEXT');
+        console.log('Migration: added summarizer_raw_response column to step_logs');
+      } catch (e: any) {
+        console.error('Migration step_logs.summarizer_raw_response failed:', e.message);
+      }
+    }
+
     if (!sessionColumns.some((c: any) => c.name === 'archived')) {
       try {
         db.exec('ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0');
@@ -161,6 +209,36 @@ function initDB() {
         console.log('Migration: added archived column to sessions');
       } catch (e: any) {
         console.error('Migration sessions.archived failed:', e.message);
+      }
+    }
+
+    // Apify usage tracking (Dim 1, Item extra — Apify cost capture).
+    // Una fila por llamada a `apifyScrapeUrl`. Permite agregar costo por
+    // sesión/usuario/periodo sin depender del dashboard de Apify.
+    const apifyUsageExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='apify_usage'")
+      .get();
+    if (!apifyUsageExists) {
+      try {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS apify_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            target_url TEXT NOT NULL,
+            called_at BIGINT NOT NULL,
+            success INTEGER NOT NULL DEFAULT 1,
+            error_message TEXT,
+            duration_ms INTEGER,
+            result_size_bytes INTEGER,
+            cost_estimate_usd REAL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS apify_usage_session_idx ON apify_usage(session_id, called_at);
+          CREATE INDEX IF NOT EXISTS apify_usage_called_at_idx ON apify_usage(called_at);
+        `);
+        console.log('Migration: created apify_usage table');
+      } catch (e: any) {
+        console.error('Migration apify_usage failed:', e.message);
       }
     }
     if (!spaceColumns.some((c: any) => c.name === 'parent_id')) {

@@ -6,6 +6,7 @@ import path from 'path';
 process.env.APIFY_LOG_LEVEL = 'ERROR';
 
 import { getWorkspaceDir } from './tools.js';
+import { logApifyUsage } from '../lib/apify-tracker.js';
 
 // Retry helper with explicit timeout to prevent hanging forever
 async function withRetryAndTimeout<T>(operation: () => Promise<T>, maxRetries = 2, timeoutMs = 180000): Promise<T> {
@@ -33,6 +34,9 @@ export async function apifyScrapeUrl(url: string, sessionId: string) {
   }
 
   const client = new ApifyClient({ token });
+  const callStart = Date.now();
+  let resultSizeBytes: number | null = null;
+  let lastError: string | null = null;
 
   try {
     const isUrlPdf = url.toLowerCase().includes(".pdf");
@@ -165,12 +169,26 @@ export async function apifyScrapeUrl(url: string, sessionId: string) {
       const buffer = Buffer.from(item.base64, 'base64');
       await fs.mkdir(path.dirname(savePath), { recursive: true });
       await fs.writeFile(savePath, buffer);
-      
+      resultSizeBytes = buffer.length;
+
       return `Successfully bypassed proxy/WAF and downloaded target to workspace/${filename}`;
     } else {
-      return "No content found using Apify.";
+      lastError = "No content found using Apify";
+      return lastError;
     }
   } catch (e: any) {
+    lastError = e.message;
     return `Error running Apify: ${e.message}`;
+  } finally {
+    // Log siempre (success o failure) para que el costo quede capturado.
+    // await sin await explícito: logApifyUsage no debe bloquear el return.
+    void logApifyUsage({
+      sessionId,
+      targetUrl: url,
+      success: lastError === null,
+      durationMs: Date.now() - callStart,
+      resultSizeBytes,
+      errorMessage: lastError,
+    });
   }
 }

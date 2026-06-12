@@ -1,4 +1,4 @@
-import { preprocessHtmlForDocx } from './server.ts';
+import { preprocessHtmlForDocx } from '../../src/lib/docx/preprocess-html.ts';
 
 const inputHtml = `<span style="background-color: yellow;">Yellow background</span>
 <span style="color: rgb(37, 99, 235);">RGB Blue text</span>

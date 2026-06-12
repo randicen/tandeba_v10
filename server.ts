@@ -5,179 +5,10 @@ import path from "path";
 import { pool } from "./src/lib/db.js";
 import { fileURLToPath } from "url";
 import multer from "multer";
-
-export async function preprocessHtmlForDocx(html: string): Promise<string> {
-  let exportHtml = html;
-  exportHtml = exportHtml.replace(/<font([^>]*) face="([^"]+)"([^>]*)>/gi, '<span style="font-family: $2;"$1$3>');
-  exportHtml = exportHtml.replace(/<font([^>]*) size="([^"]+)"([^>]*)>/gi, (match, prefix, size, suffix) => {
-    const sizeMap: Record<string, string> = { '1': '10pt', '2': '11pt', '3': '12pt', '4': '14pt', '5': '18pt', '6': '24pt', '7': '36pt' };
-    return `<span style="font-size: ${sizeMap[size] || '12pt'};"${prefix}${suffix}>`;
-  });
-  exportHtml = exportHtml.replace(/<font([^>]*) color="([^"]+)"([^>]*)>/gi, '<span style="color: $2;"$1$3>');
-  exportHtml = exportHtml.replace(/<\/font>/gi, '</span>');
-  exportHtml = exportHtml.replace(/<mark([^>]*)>/gi, '<span style="background-color: yellow;"$1>');
-  exportHtml = exportHtml.replace(/<\/mark>/gi, '</span>');
-
-  const cheerio = await import("cheerio");
-  const $ = cheerio.load(exportHtml, { decodeEntities: false });
-
-  // Fix generic font sizes inside style attributes (e.g., styleWithCSS browser output)
-  $('*[style]').each((_, el) => {
-    let style = $(el).attr('style');
-    if (!style) return;
-    
-    // Map browser semantic font sizes to exact pt values so html-to-docx parses them correctly
-    const sizeMap = {
-       'xx-small': '8pt',
-       'x-small': '10pt',
-       'small': '11pt',
-       'medium': '12pt',
-       'large': '14pt',
-       'x-large': '18pt',
-       'xx-large': '24pt',
-       // standard sizes mapping matching Jodit dropdown if generated
-       '1': '10pt', '2': '11pt', '3': '12pt', '4': '14pt', '5': '18pt', '6': '24pt', '7': '36pt'
-    };
-    
-    let updatedStyle = style.replace(/font-size:\s*([^;]+);?/gi, (match, sizeValue) => {
-       const cleanSize = sizeValue.trim().toLowerCase();
-       if (sizeMap[cleanSize]) {
-          return `font-size: ${sizeMap[cleanSize]};`;
-       }
-       return match;
-    });
-
-    if (updatedStyle !== style) {
-       $(el).attr('style', updatedStyle);
-       style = updatedStyle;
-    }
-
-    const tagName = (el as any).tagName ? (el as any).tagName.toLowerCase() : '';
-    const isBlock = ['p', 'div', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'tbody', 'tr', 'td', 'th'].includes(tagName);
-
-    if (isBlock) {
-      if (/italic/i.test(style)) { $(el).html(`<i>${$(el).html()}</i>`); }
-      if (/underline/i.test(style)) { $(el).html(`<u>${$(el).html()}</u>`); }
-      if (/line-through/i.test(style)) { $(el).html(`<s>${$(el).html()}</s>`); }
-      if (/(700|800|900|bold)/i.test(style)) { $(el).html(`<b>${$(el).html()}</b>`); }
-    } else {
-      if (/italic/i.test(style) && tagName !== 'i' && tagName !== 'em') { $(el).wrap('<i></i>'); }
-      if (/underline/i.test(style) && tagName !== 'u') { $(el).wrap('<u></u>'); }
-      if (/line-through/i.test(style) && tagName !== 's' && tagName !== 'strike') { $(el).wrap('<s></s>'); }
-      if (/(700|800|900|bold)/i.test(style) && tagName !== 'b' && tagName !== 'strong') { $(el).wrap('<b></b>'); }
-    }
-  });
-
-  // Pull ul/ol out of any inline tags like span, font, b, i, etc.
-  // This solves lists disappearing or not rendering bullets when wrapped by browser's execCommand
-  const inlineTags = ['span', 'font', 'b', 'i', 'u', 's', 'strong', 'em', 'mark'];
-  let listsReparented = true;
-  while (listsReparented) {
-    listsReparented = false;
-    $('ul, ol').each((_, el) => {
-      const parent = $(el).parent();
-      if (parent.length && parent[0]) {
-        const tagName = ((parent[0] as any).name || (parent[0] as any).tagName || '').toLowerCase();
-        if (tagName && inlineTags.includes(tagName)) {
-           parent.replaceWith(parent.contents());
-           listsReparented = true;
-        }
-      }
-    });
-  }
-
-  // Convert em/strong to i/b as html-to-docx sometimes fails on em/strong depending on nesting
-  $('em').each((_, el) => { (el as any).tagName = 'i'; });
-  $('strong').each((_, el) => { (el as any).tagName = 'b'; });
-
-  // Convert <s>, <strike>, <del> to <span style="text-decoration:line-through">
-  // so html-to-docx handles them without requiring patched node_modules.
-  $('s, strike, del').each((_, el) => {
-    const $el = $(el);
-    const existingStyle = $el.attr('style') || '';
-    const mergedStyle = existingStyle ? `${existingStyle}; text-decoration: line-through` : 'text-decoration: line-through';
-    $el.replaceWith($(`<span style="${mergedStyle}">${$el.html()}</span>`));
-  });
-
-  // Convert CSS font/size/color spans to <font> tags that html-to-docx understands natively.
-  // Done inside cheerio DOM to handle nesting correctly (no regex on raw HTML).
-  const SIZE_TO_HTML: Record<string, string> = {
-    '8pt': '1', '10pt': '2', '11pt': '2', '12pt': '3', '14pt': '4',
-    '16pt': '4', '18pt': '5', '20pt': '5', '22pt': '6', '24pt': '6',
-    '28pt': '7', '36pt': '7'
-  };
-
-  $('span[style]').each((_, el) => {
-    const $el = $(el);
-    const style = ($el.attr('style') || '').toLowerCase().replace(/&quot;/g, '"');
-    if (!style) return;
-
-    // Extract font-family
-    const ffMatch = style.match(/font-family:\s*([^;"]+)/i);
-    // Extract font-size  
-    const fsMatch = style.match(/font-size:\s*(\d+pt)/i);
-    // Extract text color
-    const colorMatch = style.match(/(?:^|[^-])color:\s*([^;]+)/i);
-    // Extract background-color
-    const bgMatch = style.match(/background-color:\s*([^;]+)/i);
-    // Extract text-decoration
-    const tdMatch = style.match(/text-decoration:\s*line-through/i);
-
-    let innerContent = $el.html() || '';
-
-    if (ffMatch) {
-      innerContent = `<font face="${ffMatch[1].trim()}">${innerContent}</font>`;
-    }
-    if (fsMatch && SIZE_TO_HTML[fsMatch[1]]) {
-      innerContent = `<font size="${SIZE_TO_HTML[fsMatch[1]]}">${innerContent}</font>`;
-    }
-    if (colorMatch) {
-      innerContent = `<font color="${colorMatch[1].trim()}">${innerContent}</font>`;
-    }
-    if (bgMatch) {
-      innerContent = `<font style="background-color: ${bgMatch[1].trim()};">${innerContent}</font>`;
-    }
-
-    // Build remaining style (anything not handled above)
-    let remaining = style
-      .replace(/font-family:\s*[^;]+;?/gi, '')
-      .replace(/font-size:\s*\d+pt;?/gi, '')
-      .replace(/(?:^|[^-])color:\s*[^;]+;?/gi, '')
-      .replace(/background-color:\s*[^;]+;?/gi, '')
-      .replace(/text-decoration:\s*line-through;?/gi, '')
-      .replace(/&quot;/g, '')
-      .replace(/;{2,}/g, ';')
-      .replace(/^\s*;\s*/, '')
-      .replace(/;\s*$/, '')
-      .trim();
-
-    if (tdMatch) {
-      innerContent = `<s>${innerContent}</s>`;
-    }
-
-    if (remaining) {
-      $el.attr('style', remaining);
-      $el.html(innerContent);
-    } else {
-      $el.replaceWith($(innerContent));
-    }
-  });
-
-  // Inject ZWSP to prevent html-to-docx nesting drop bug
-  const formatTags = ['b', 'i', 'u'];
-  for (const tag of formatTags) {
-    $(tag).prepend('&#8203;');
-  }
-
-  let resultHtml = $.html();
-
-  // Fix cheerio re-encoding: decode &quot; back to " inside style attributes
-  resultHtml = resultHtml.replace(/style="([^"]*&quot;[^"]*)"/g, (_, content) => {
-    return `style="${content.replace(/&quot;/g, '"')}"`;
-  });
-
-  return resultHtml;
-}
+// Re-export para mantener compatibilidad con imports externos (e.g. tests/manual).
+// La implementación vive en src/lib/docx/preprocess-html.ts.
+export { preprocessHtmlForDocx } from "./src/lib/docx/preprocess-html.js";
+import { preprocessHtmlForDocx } from "./src/lib/docx/preprocess-html.js";
 
 // Agent imports
 import { v4 as uuidv4 } from "uuid";
@@ -185,6 +16,7 @@ import { v4 as uuidv4 } from "uuid";
 
 import { createSession, getSession, getSessions, stepSession, addMessage, updateSession } from "./src/agent/agent.js";
 import { getWorkspaceFiles, syncWorkspaceFromR2, ensureFileLocal } from "./src/agent/tools.js";
+import { isInsufficientBalance, MAINTENANCE_MESSAGE, getUserMessage } from "./src/lib/llm-errors.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -275,53 +107,10 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ai/chat", async (req, res) => {
-    try {
-      const { history, docType } = req.body;
-      const { openai } = await import("./src/agent/agent.js");
-      
-      let systemPrompt = "You are an AI assistant integrated into a document editor. Your job is to converse with the user and potentially modify the document.\n\nYou MUST return EXACTLY a JSON object with:\n1. \"reply\": A conversational string to reply to the user (use Markdown).\n2. \"edits\": An optional array of objects representing document changes. Each object must have:\n   - \"original\": The EXACT HTML substring from the document to be replaced. MUST strictly match the document's HTML. If adding to the start or end, include a few words of anchor context in 'original' and the anchor + new text in 'new'.\n   - \"new\": The new HTML to replace it with.\n\nIf no changes are needed, omit the \"edits\" array. Keep edits precise to avoid replacing unintended parts of the document.";
-
-      if (docType === 'excel') {
-        systemPrompt = "You are an AI assistant integrated into an Excel spreadsheet editor. Your job is to converse with the user and potentially modify the spreadsheet.\n\nYou MUST return EXACTLY a JSON object with:\n1. \"reply\": A conversational string to reply to the user (use Markdown).\n2. \"edits\": An optional array of objects representing spreadsheet changes. Each object must have:\n   - \"sheet\": The name of the sheet to modify (string).\n   - \"row\": The row index (number, 1-indexed).\n   - \"col\": The column index (number, 1-indexed).\n   - \"value\": The new value for the cell (string, number, or boolean).\n\nIf no changes are needed, omit the \"edits\" array. Keep edits precise.";
-      }
-      
-      const response = await openai.chat.completions.create({
-        model: "deepseek-v4-flash",
-        response_format: { type: "json_object" },
-        messages: [
-          { 
-            role: "system", 
-            content: systemPrompt
-          },
-          ...history
-        ]
-      });
-
-      const parsed = JSON.parse(response.choices[0].message.content || "{}");
-      res.json(parsed);
-    } catch(e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-  app.post("/api/ai/edit-fragment", async (req, res) => {
-    try {
-      const { text, prompt, context } = req.body;
-      const { openai } = await import("./src/agent/agent.js");
-      
-      const response = await openai.chat.completions.create({
-        model: "deepseek-v4-flash",
-        messages: [
-          { role: "system", content: "You are an expert ghostwriter and copyeditor. Your task is to rewrite or edit the user's specific text fragment exactly as requested. \n\nRETURN ONLY THE NEW REWRITTEN TEXT, WITHOUT ANY CONVERSATIONAL FLUFF, EXPLANATIONS, OR QUOTES unless explicitly asked. The rewritten text must integrate seamlessly into a document." },
-          { role: "user", content: `Context of the entire document:\n---\n${context || 'No context provided'}\n---\n\nText to edit: ${text}\n\nTask: ${prompt}` }
-        ]
-      });
-
-      res.json({ result: response.choices[0].message.content });
-    } catch(e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
+  // AI stateless endpoints (chat con editor + ghostwriter). Definidos en
+  // src/agent/api-routes.ts para reducir la superficie de server.ts.
+  const { aiRouter } = await import("./src/agent/api-routes.js");
+  app.use("/api/ai", aiRouter);
 
   // API Routes
   app.get("/api/health", (req, res) => {
@@ -730,8 +519,17 @@ async function startServer() {
       console.log(`[API] stepSession end for ${req.params.id}`);
       res.json(session);
     } catch(e: any) {
+      if (isInsufficientBalance(e)) {
+        // Log interno con el error real (status, body, stack) para monitoría.
+        // El usuario ve solo el mensaje genérico de mantenimiento.
+        console.error(`[INTERNAL] stepSession 402 Insufficient Balance for ${req.params.id}:`, e);
+        return res.status(503).json({
+          error: MAINTENANCE_MESSAGE,
+          code: "SERVICE_UNAVAILABLE",
+        });
+      }
       console.error(`[API] stepSession error for ${req.params.id}:`, e);
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: getUserMessage(e) });
     }
   });
 

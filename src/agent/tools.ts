@@ -8,11 +8,117 @@ import * as xlsx from "xlsx";
 import { DocxEngine } from '../lib/docx/DocxEngine.js';
 import { batchReviewDocuments, generateDashboardHtml } from './batch-processor.js';
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { assertUrlAllowed, NETWORK_TOOLS, extractUrlFromToolArgs } from '../lib/network-policy.js';
+import { requiresHumanApproval, HUMAN_APPROVED_FLAG } from '../lib/hitl-policy.js';
 
 const r2AccountId = process.env.R2_ACCOUNT_ID;
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 const r2BucketName = process.env.R2_BUCKET_NAME || "agent-workspace";
+
+/**
+ * Auto-detecta si Chrome puede correr con su sandbox nativo.
+ *
+ * Casos donde el sandbox nativo NO funciona (y se necesita `--no-sandbox`):
+ *   - Dentro de un container Docker corriendo como root (el caso default
+ *     de Railway). Chrome rehúsa sandboxearse como root por seguridad.
+ *
+ * Para un SaaS multi-tenant (firma legal vendiendo a clientes), el sandbox
+ * es CRÍTICO: sin él, una web maliciosa con prompt injection puede leer/
+ * escribir archivos del container donde están los workspaces de todos los
+ * usuarios. Recomendamos **SIEMPRE deployar como non-root** en producción.
+ *
+ * Comportamiento por entorno:
+ *   - **Dev (Windows o Linux/macOS como user normal)**: sandbox nativo OK.
+ *   - **Producción (Docker como root)**: auto-detect desactiva el sandbox.
+ *     ⚠️ Esto es **inseguro para SaaS multi-tenant**. Solución: deployar
+ *     como non-root (Dockerfile con `USER node` o similar). Ver sección
+ *     "Deploy en Railway" en `AGENT_DIM_1_SECURITY_PHASES.md`.
+ *
+ * Override manual:
+ *   - `ALLOW_SANDBOX=1` → fuerza sandbox seguro. Si Chrome falla al lanzar
+ *     (porque realmente no puede sandboxear), vas a ver un error. Útil
+ *     en producción con Dockerfile non-root.
+ *   - `ALLOW_NO_SANDBOX=1` → fuerza el modo inseguro. Útil SOLO para dev
+ *     local si el sandbox nativo te da problemas.
+ *
+ * Logs: si se desactiva el sandbox, warn UNA VEZ al primer
+ * `getPuppeteerLaunchArgs()` que lo detecte. No spammea en cada tool call.
+ */
+let warnedAboutNoSandbox = false;
+
+export function getPuppeteerLaunchArgs(): string[] {
+  const baseArgs = ['--disable-dev-shm-usage']; // Docker-friendly, inofensivo en Windows
+
+  const decision = shouldDisableSandbox();
+
+  if (decision.disable) {
+    if (!warnedAboutNoSandbox) {
+      warnedAboutNoSandbox = true;
+      const isProd = process.env.NODE_ENV === 'production';
+      const isSaas = process.env.SAAS_MODE === '1'; // opt-in para multi-tenant
+      const severity = isProd || isSaas ? 'HIGH' : 'MEDIUM';
+      console.warn(
+        `[PUPPETEER][${severity}] Sandbox desactivado (${decision.reason}). ` +
+        `Páginas maliciosas podrían leer/escribir el host filesystem. ` +
+        (isProd || isSaas
+          ? `ESTÁS EN PRODUCCIÓN / SAAS MULTI-TENANT. Deployá como non-root ` +
+            `(Dockerfile con USER node). Ver AGENT_DIM_1_SECURITY_PHASES.md.`
+          : `En dev es tolerable, pero en producción deployá como non-root.`)
+      );
+    }
+    return ['--no-sandbox', '--disable-setuid-sandbox', ...baseArgs];
+  }
+
+  return baseArgs;
+}
+
+function shouldDisableSandbox(): { disable: boolean; reason: string } {
+  // Override explícito del usuario (para forzar seguro en Docker con user custom)
+  if (process.env.ALLOW_SANDBOX === '1') {
+    return { disable: false, reason: 'ALLOW_SANDBOX=1 forzó sandbox seguro' };
+  }
+  // Override explícito del usuario (escape hatch, requiere warn)
+  if (process.env.ALLOW_NO_SANDBOX === '1') {
+    return { disable: true, reason: 'ALLOW_NO_SANDBOX=1 explícito' };
+  }
+  // Auto-detección: Docker container
+  if (isDockerContainer()) {
+    return { disable: true, reason: 'corriendo dentro de un container Docker' };
+  }
+  // Auto-detección: proceso Unix como root
+  if (isRunningAsRoot()) {
+    return { disable: true, reason: 'corriendo como root (root no puede sandboxearse)' };
+  }
+  return { disable: false, reason: 'sandbox nativo OK' };
+}
+
+function isDockerContainer(): boolean {
+  // Docker crea este archivo dentro de cada container por convención.
+  // La forma más estándar de detectar "estoy en Docker".
+  try {
+    require('fs').accessSync('/.dockerenv');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isRunningAsRoot(): boolean {
+  // En Windows no hay "root" en el sentido Unix; getuid() no existe.
+  if (process.platform === 'win32') return false;
+  if (typeof process.getuid !== 'function') return false;
+  try {
+    return process.getuid() === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Test-only: resetea el flag interno que evita spammear el warn. */
+export function __resetPuppeteerWarnForTesting(): void {
+  warnedAboutNoSandbox = false;
+}
 
 export let s3Client: S3Client | null = null;
 const sandboxes = new Map<string, { sandbox: any, lastUsed: number }>();
@@ -319,6 +425,33 @@ import { getCoreMemory, setCoreMemory, deleteCoreMemory, addEpisodicMemory, sear
 import { apifyScrapeUrl } from "./apify.js";
 
 export async function executeTool(name: string, args: any, sessionId: string): Promise<any> {
+  // Network policy (Dim 1, Item 1.2): si la tool va a salir a la red, validar
+  // la URL contra el allowlist ANTES de invocarla. Si falla, devolver el
+  // error como tool result (no crashear el step). El LLM puede reaccionar
+  // (ej. pedir otro URL, o reportar al usuario).
+  if (NETWORK_TOOLS.has(name)) {
+    const url = extractUrlFromToolArgs(name, args);
+    if (url !== null) {
+      try {
+        assertUrlAllowed(url);
+      } catch (e: any) {
+        return `Error: ${e.message}`;
+      }
+    }
+  }
+
+  // HITL (Dim 1, Item 1.3): tools destructivas requieren aprobación humana.
+  // El LLM setea `__human_approved: true` en args DESPUÉS de llamar ask_human
+  // y recibir confirmación. Si la tool requiere aprobación y el flag no está,
+  // devolver la pregunta pre-formulada para que el LLM la pase a ask_human.
+  const hitl = requiresHumanApproval(name, args);
+  if (hitl.requires && args?.[HUMAN_APPROVED_FLAG] !== true) {
+    return `Error: ${hitl.reason} Debés pedir aprobación humana antes de ejecutar esta tool. ` +
+      `Llama ask_human con esta pregunta EXACTA: "${hitl.question}" ` +
+      `Si el humano responde "sí" / "ok" / "hazlo" / "approved", reintentá esta tool agregando ` +
+      `"${HUMAN_APPROVED_FLAG}": true a los args.`;
+  }
+
   if (name === "ai_document_editor") {
     return await aiDocumentEditor(args.path, args.instruction, sessionId);
   }
@@ -605,7 +738,7 @@ async function searchWeb(query: string) {
   try {
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: getPuppeteerLaunchArgs()
     });
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36');
@@ -652,7 +785,7 @@ async function readUrl(url: string) {
   try {
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: getPuppeteerLaunchArgs()
     });
     const page = await browser.newPage();
     
@@ -753,7 +886,7 @@ async function browserAction(action: string, params: any, sessionId: string) {
     if (!bSession) {
         let browserInstance = await puppeteer.launch({
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            args: getPuppeteerLaunchArgs()
         });
         let browserPage = await browserInstance.newPage();
         
@@ -971,7 +1104,7 @@ export async function aiDocumentEditor(filePath: string, instruction: string, se
     const { openai } = await import("./agent.js");
     console.log("Calling Sub-LLM for document HTML editing...");
     const response = await openai.chat.completions.create({
-      model: "deepseek-chat",
+      model: process.env.OPENCODE_MODEL ?? "deepseek-v4-flash-free",
       messages: [
         { role: "system", content: "You are an expert Document editor. Your task is to modify the provided semantic HTML document exactly as requested by the user's instruction. Keep the semantic structure perfectly intact. IMPORTANT: When applying styles (such as font family, font size, highlights, strike-through, colors), you MUST use inline CSS styles (e.g. `<span style=\"font-family: 'Times New Roman'; font-size: 16pt; background-color: yellow;\">`). Do NOT use deprecated tags like `<font>`. Use `<b>` and `<i>` for bold and italic. If the instruction asks for GLOBAL styles (e.g. 'make the whole document Times New Roman size 16'), you MUST wrap the entire document content inside a `<div style=\"font-family: 'Times New Roman'; font-size: 16pt;\">`. DO NOT add any markdown formatting like ```html, return ONLY the raw HTML string." },
         { role: "user", content: `Instruction: ${instruction}\n\nExisting HTML:\n${htmlContent}` }
