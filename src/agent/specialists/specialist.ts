@@ -1,36 +1,30 @@
 /**
- * Worgena — Specialist (D2b.1).
+ * Worgena — Specialist (D2b.1 + D2b.2).
  *
- * Fuente de verdad: `AGENT_D2B_1_SPEC.md` §3.7, §5.2.
+ * Fuente de verdad:
+ * - D2b.1: `AGENT_D2B_1_SPEC.md` §3.7, §5.2.
+ * - D2b.2: `AGENT_D2B_2_SPEC.md` §3.5, §3.6, §5.6.
  *
  * Un `Specialist` es un sub-agente de Capa 3 (roadmap §5.3) que ejecuta
  * un nodo LLM con un system prompt especializado, tools acotadas, y
- * contexto limpio. En D2b.1 los specialists son MOCKS (no usan LLM real);
- * en D2b.2 se enchufa OpenRouter real.
+ * contexto limpio.
  *
- * Interfaz mínima:
- * - `agentId`: string estable que identifica al specialist en logs/métricas.
- *   Ej: "intake_specialist_v1".
- * - `capabilities`: lista de skills/tools que el specialist sabe usar.
- *   En D2b.1 son placeholders (los specialists no invocan tools aún).
- *   En D2b.2 + D2c (skills v1) esto se llena con los skills reales.
- * - `preferredModel`: tier o nombre específico que el specialist prefiere.
- *   El `SpecialistRegistry` usa esto + el `TierResolver` para resolver
- *   el invocador concreto al construir el specialist.
- * - `execute(params)`: corre el nodo. Retorna un `NodeExecutionOutcome`
- *   completo (output, confidence, tokens, cost, prompt snapshot). El
- *   motor NO valida nada extra — el specialist es opaco.
+ * **D2b.2 — cambios** (suma, no reemplaza):
+ * - `agentCard: AgentCard` (A2A v1.0). Forward-compat con el A2A server
+ *   de D3+.
+ * - `lifecycle: Lifecycle` (state machine 6 estados). Para audit y
+ *   observabilidad.
+ * - `agentVersion` ahora es semver limpio ("1.0.0"), no "1.0.0-d2b.1".
+ *   El constructor lo inicializa; el caller no lo pasa.
  *
- * Por qué el specialist retorna `NodeExecutionOutcome` (en lugar de
- * delegar al motor y dejar que el motor valide): el specialist tiene
- * el system prompt y el output completo, así que puede hacer TODO
- * (system + user prompt + output validation + confidence gating)
- * adentro. El motor no duplica esa lógica. Ver spec §3.4.
+ * **El método `execute()` no cambió**: backward-compat con D2b.1. Los
+ * 16 tests D2b.1 siguen pasando sin cambios (los specialists extienden
+ * la interface y agregan los nuevos campos).
  *
- * Backward-compat: el motor (D2a) no sabe que existen los specialists.
- * El `node-runner` enruta al specialist si el nodo tiene
- * `assignedSpecialist` Y el registry lo tiene. Si no, usa el
- * `llmInvoker` default (D2a.4 behavior).
+ * **Por qué `lifecycle` es required (no opcional)**: el lifecycle es
+ * metadata del specialist. Si fuera opcional, los callers olvidarían
+ * inicializarlo. Forzando required + inicialización en constructor,
+ * garantizamos que TODOS los specialists tienen un lifecycle.
  */
 
 import type {
@@ -42,6 +36,8 @@ import type {
   WorkflowState,
 } from "../workflow-engine/executor/types.js";
 import type { ModelRef } from "./tier-resolver.js";
+import type { AgentCard } from "./agent-card.js";
+import type { Lifecycle } from "./lifecycle.js";
 
 // ============================================================
 // Specialist interface
@@ -50,24 +46,35 @@ import type { ModelRef } from "./tier-resolver.js";
 /**
  * Sub-agente de Capa 3 que ejecuta un nodo LLM con un prompt especializado.
  *
- * Cada specialist tiene un `agentId` estable, una lista de `capabilities`
- * (placeholder en D2b.1), y un `preferredModel` (tier que el registry
- * resuelve a un invocador concreto).
+ * Cada specialist tiene:
+ * - `agentId`: ID estable (ej: "intake_specialist_v1").
+ * - `agentVersion`: semver del agent. D2b.2 = "1.0.0" (sin sufijo de sprint).
+ * - `agentCard`: metadata A2A v1.0 (capacidades, skills, pricing, limits).
+ * - `capabilities`: lista corta de skills que el specialist sabe usar
+ *   (placeholder en D2b.1; en D2b.2 se llena desde el `agentCard.skills`).
+ * - `preferredModel`: tier o nombre específico que el specialist prefiere.
+ *   El `SpecialistRegistry` usa esto + el `TierResolver` para resolver
+ *   el invocador concreto al construir el specialist.
+ * - `lifecycle`: state machine de 6 estados (spawn → idle → busy →
+ *   paused → done → archived). Para audit y observabilidad.
  *
  * El método `execute()` recibe el nodo + state + task + signal, y
  * retorna un `NodeExecutionOutcome` que el motor persiste en el state.
  */
 export interface Specialist {
   readonly agentId: string;
+  /** Semver del agent. D2b.2: "1.0.0" (sin sufijo de sprint). */
+  readonly agentVersion: string;
+  /** Agent Card A2A v1.0. Forward-compat con A2A server de D3+. */
+  readonly agentCard: AgentCard;
   readonly capabilities: readonly string[];
   /** Modelo que el specialist prefiere. Se resuelve via TierResolver. */
   readonly preferredModel: ModelRef;
   /**
-   * Versión semver del agent. En D2b.1 todos son mocks con
-   * `SPECIALIST_AGENT_VERSION` ("1.0.0-d2b.1"). En D2b.2 cada
-   * specialist con Agent Card formal tiene su propia versión.
+   * State machine del lifecycle del specialist. Cada specialist tiene
+   * su propio lifecycle (1 instancia por specialist, no global).
    */
-  readonly agentVersion: string;
+  readonly lifecycle: Lifecycle;
 
   /**
    * Ejecuta un nodo LLM como specialist. Retorna el outcome completo
@@ -76,16 +83,17 @@ export interface Specialist {
    *
    * El specialist hace TODA la lógica del nodo:
    * 1. Construir system + user prompts especializados.
-   * 2. Llamar al invocador (mock en D2b.1, OpenRouter en D2b.2).
-   * 3. Validar output contra `node.outputSchema` (si está declarado).
-   * 4. Calcular confidence gating (si `node.confidenceGating` está).
-   * 5. Retornar `NodeExecutionOutcome` con `metadata.executedBy`
+   * 2. Transicionar el lifecycle a `busy` (y a `done` o `archived` al final).
+   * 3. Llamar al invocador (mock en D2b.1, OpenRouter en D2b.2).
+   * 4. Validar output contra `node.outputSchema` (si está declarado).
+   * 5. Calcular confidence gating (si `node.confidenceGating` está).
+   * 6. Retornar `NodeExecutionOutcome` con `metadata.executedBy`
    *    poblado en `NodeResult` (lo setea el motor, no el specialist).
    *
    * El specialist retorna el outcome sin metadata.executedBy — el
    * motor lo agrega en `makeSuccessResult` cuando persiste el resultado.
-   * El specialist solo conoce su `agentId` y `agentVersion` (para que
-   * el motor los lea después).
+   * El specialist solo conoce su `agentId`, `agentVersion`, y `agentCard`
+   * (para que el motor los lea después).
    */
   execute(params: SpecialistExecuteParams): Promise<NodeExecutionOutcome>;
 }
@@ -106,11 +114,17 @@ export interface SpecialistExecuteParams {
 }
 
 /**
- * Versión del agent del specialist. Hoy es siempre "1.0.0-d2b.1" porque
- * los specialists son mocks. En D2b.2 cada specialist con Agent Card
- * formal tendrá su versión semver (ej: "1.0.0", "1.1.0" cuando evolucione).
+ * Versión del agent del specialist. En D2b.2 los specialists con
+ * Agent Card formal tienen semver limpio "1.0.0" (sin sufijo de sprint).
  *
- * Esta constante se exporta para que el motor la use al poblar
- * `NodeResult.metadata.executedBy.agentVersion`.
+ * **D2b.1 backward-compat**: el constante sigue exportado por si algún
+ * caller D2b.1 lo usa. Los 3 specialists D2b.2 NO lo usan — su
+ * `agentVersion` se lee del `agentCard.version` (fuente única de verdad).
+ *
+ * **Por qué deprecated**: tener dos fuentes para la versión (este
+ * constante + el `agentCard.version`) es un footgun. D3+ elimina
+ * el constante.
+ *
+ * @deprecated Usar `specialist.agentCard.version` en su lugar.
  */
 export const SPECIALIST_AGENT_VERSION = "1.0.0-d2b.1" as const;

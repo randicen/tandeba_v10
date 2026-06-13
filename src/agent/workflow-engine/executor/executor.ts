@@ -1,7 +1,10 @@
 /**
  * Worgena Workflow Engine — WorkflowExecutor.
  *
- * Fuente de verdad: AGENT_D2A_4_HITL_PRIMITIVES_SPEC.md (v1.0) +
+ * Fuente de verdad: AGENT_D2B_2_SPEC.md (v1.0) +
+ *                   AGENT_D2B_1_SPEC.md (v1.0) +
+ *                   AGENT_D2A_5_SPEC.md (v1.0) +
+ *                   AGENT_D2A_4_HITL_PRIMITIVES_SPEC.md (v1.0) +
  *                   AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md (v1.1) +
  *                   AGENT_D2A_2_2_TIMEOUT_RETRY_IDEMPOTENCY_SPEC.md (v1.0) +
  *                   AGENT_WORKFLOW_DSL_SPEC.md (v0.2).
@@ -367,21 +370,38 @@ export class WorkflowExecutor {
   }
 
   /**
-   * Libera el cache de idempotency de una task, pero RETIENE la task en el
-   * map interno. Esto permite que `replayTask(taskId)` siga funcionando
-   * sobre la task original.
+   * Libera el cache de idempotency Y el flag de cancelación de una task,
+   * pero RETIENE la task en el map interno y su workflow asociado.
+   * Esto permite que `replayTask(taskId)` siga funcionando sobre la task
+   * original.
    *
    * Para eliminar la task completamente (irrecuperable), usar `purgeTask(taskId)`.
    *
-   * D2a.2.3: cambio de comportamiento. Antes (D2a.2.2 v1) `cleanup` eliminaba
-   * la task del map. Ahora libera cache + libera el flag de cancelación,
-   * pero retiene la task. Es backward-incompatible con el comportamiento
-   * previo; ver `AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md` §9.3.
+   * **MAY-2 (audit D2 2026-06-12 — cleanup #2)**: el spec D2a.2.3 §9.3
+   * decía "libera el cache de idempotency pero retiene la task". El
+   * comportamiento real también libera `cancelledTasks` (cambio
+   * silencioso, no documentado). Ahora el spec está sincronizado
+   * con el código: `cleanup` es un "soft reset" que libera
+   * idempotency cache + cancellation flag, retiene task + workflow.
+   *
+   * D2a.2.3: cambio de comportamiento (backward-incompatible). Antes
+   * (D2a.2.2 v1) `cleanup` eliminaba la task del map. Ahora libera
+   * cache + cancellation flag, retiene task + workflow. Ver
+   * `AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md` §9.3.
    */
   cleanup(taskId: string): void {
+    // Libera 2 cosas:
     this.idempotencyCaches.delete(taskId);
     this.cancelledTasks.delete(taskId);
-    this.log?.debug(`task cache cleaned up (task retained for replay)`, { taskId });
+    // Retiene 3 cosas:
+    // - this.tasks (la task en sí)
+    // - this.taskWorkflows (workflow asociado)
+    // (la tercera es el `task.error`/`task.status` que el caller ya
+    // conoce — no se modifica)
+    this.log?.debug(`task soft-reset (cache + cancel flag liberados, task retenida)`, {
+      taskId,
+      retainedForReplay: true,
+    });
   }
 
   /**
@@ -841,6 +861,7 @@ export class WorkflowExecutor {
                 retriable: false,
               },
               retryCount: 0,
+              costUsd: 0,
             };
             task.nodeResults[nodeId] = result;
             this.failTask(task, {
@@ -859,6 +880,7 @@ export class WorkflowExecutor {
           completedAt: new Date().toISOString(),
           output,
           retryCount: 0,
+          costUsd: 0,  // HITL no incurre en costo LLM. MIN-5.
         };
         this.writeOutputToState(task, node, output);
 
@@ -912,6 +934,7 @@ export class WorkflowExecutor {
             retriable: false,
           },
           retryCount: 0,
+          costUsd: 0,  // HITL no incurre en costo LLM. MIN-5.
         };
         // Aplicar onError del nodo.
         const action = node.onError ?? "fail";
@@ -951,6 +974,7 @@ export class WorkflowExecutor {
             retriable: false,
           },
           retryCount: 0,
+          costUsd: 0,  // HITL no incurre en costo LLM. MIN-5.
         };
         this.failTask(task, {
           code: "HITL_TIMEOUT",
@@ -1447,51 +1471,19 @@ export class WorkflowExecutor {
 
   /**
    * Carga el workflow aplicando migradores si es necesario (D2a.2.3).
-   * Retorna el workflow efectivo (post-migración) y la lista de migraciones
-   * aplicadas. Si el workflow ya está en la versión del motor, retorna
-   * el workflow tal cual con `appliedMigrations: []`.
+   * Wrapper trivial sobre `loadWorkflow` (migrations.ts). La única razón
+   * de existir como método privado es inyectar `this.schemaVersion` y
+   * `this.migrators` desde el `ExecutorConfig`. La lógica vive en
+   * `migrations.ts` (single source of truth).
    *
-   * Si la versión del workflow es mayor a la del motor, lanza `ExecutorError`
-   * con `SCHEMA_VERSION_UNSUPPORTED`.
+   * MAY-1 (audit D2 2026-06-12): antes esta función duplicaba la lógica
+   * de `loadWorkflow`. Consolidada en D2b.2 cleanup.
    */
   private loadAndMigrate(workflow: WorkflowDefinition): {
     workflow: WorkflowDefinition;
     appliedMigrations: readonly string[];
   } {
-    if (workflow.schemaVersion === this.schemaVersion) {
-      return { workflow, appliedMigrations: [] };
-    }
-    if (workflow.schemaVersion > this.schemaVersion) {
-      throw new ExecutorError(
-        `Workflow "${workflow.id}" v${workflow.workflowVersion} escrito contra schema v${workflow.schemaVersion}, pero el motor solo soporta hasta v${this.schemaVersion}. Actualizá el motor o reescribí el workflow.`,
-        "SCHEMA_VERSION_UNSUPPORTED",
-        {
-          workflowId: workflow.id,
-          workflowSchemaVersion: workflow.schemaVersion,
-          motorSchemaVersion: this.schemaVersion,
-        },
-      );
-    }
-    // workflow.schemaVersion < this.schemaVersion. Aplicar migradores.
-    // Capturamos las migraciones aplicadas recorriendo la cadena.
-    const appliedMigrations: string[] = [];
-    let current: WorkflowDefinition = workflow;
-    let currentVersion = current.schemaVersion;
-    while (currentVersion < this.schemaVersion) {
-      const key = `${currentVersion}->${currentVersion + 1}`;
-      const migrator = this.migrators.get(key);
-      if (!migrator) {
-        throw new ExecutorError(
-          `No hay migrador de schema v${currentVersion} a v${currentVersion + 1} para workflows. Workflow "${workflow.id}" v${workflow.workflowVersion} no se puede cargar. Registrá el migrador en el ExecutorConfig.migrators.`,
-          "SCHEMA_VERSION_UNSUPPORTED",
-          { workflowId: workflow.id, missingMigration: key },
-        );
-      }
-      current = migrator(current);
-      currentVersion = current.schemaVersion;
-      appliedMigrations.push(key);
-    }
-    return { workflow: current, appliedMigrations };
+    return loadWorkflow(workflow, this.migrators, this.schemaVersion);
   }
 
   // ─── Helpers de task ────────────────────────────────────
@@ -1513,6 +1505,7 @@ export class WorkflowExecutor {
       confidence?: "HIGH" | "MEDIUM" | "LOW";
       confidenceValue?: number;
       tokensUsed?: { input: number; output: number };
+      /** MIN-5: default 0 si el invoker no retornó costUsd. Nunca undefined. */
       costUsd?: number;
       modelUsed?: string;
       retryCount: number;
@@ -1540,7 +1533,10 @@ export class WorkflowExecutor {
       confidence: outcome.confidence,
       confidenceValue: outcome.confidenceValue,
       tokensUsed: outcome.tokensUsed,
-      costUsd: outcome.costUsd,
+      // MIN-5: `costUsd` siempre presente en NodeResult. Si el invoker
+      // no retornó, default 0. Forward-compat con audit que asume
+      // número, no undefined.
+      costUsd: outcome.costUsd ?? 0,
       modelUsed: outcome.modelUsed,
       retryCount: outcome.retryCount,
       promptSnapshot: outcome.promptSnapshot,
@@ -1569,6 +1565,7 @@ export class WorkflowExecutor {
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         retryCount: outcome.retryCount,
+        costUsd: 0,  // MIN-5: skipped no incurre en costo LLM.
       };
     }
     return {
@@ -1583,6 +1580,7 @@ export class WorkflowExecutor {
         stack: outcome.stack,
       },
       retryCount: outcome.retryCount,
+      costUsd: 0,  // MIN-5: failed sin output no incurre en costo LLM.
     };
   }
 

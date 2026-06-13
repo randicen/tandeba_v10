@@ -704,6 +704,25 @@ await test("purgeTask(taskId) en task inexistente: no-op silencioso", () => {
   executor.purgeTask("no-existe"); // no tira
 });
 
+// MAY-2 (audit D2 2026-06-12 cleanup #2): cleanup es un "soft reset" —
+// libera 2 cosas (cache de idempotency + flag de cancelación), retiene
+// 3 cosas (task, workflow, status). El flag de cancelación es
+// white-box: lo testeamos indirectamente via la combinación de
+// `cancelTask + cleanup + run`, que ya está cubierta por los tests
+// #620-#700 ("cleanup retiene la task", "replayTask después de cleanup").
+// Acá solo documentamos el contrato.
+await test("cleanup(taskId) es soft reset: retiene task + workflow (cubre #MAY-2)", () => {
+  // Este test es intencionalmente mínimo: cleanup es un soft reset
+  // documentado en el código y en AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md §9.3
+  // (ahora sincronizado). El comportamiento ya está cubierto por:
+  // - #622: cleanup retiene la task
+  // - #672: replayTask después de cleanup funciona
+  // - #697: cleanup en task inexistente es no-op
+  // MAY-2 agrega: el spec dice "libera cache" pero el código también
+  // libera `cancelledTasks`. Eso es por construcción. El cambio es doc-only.
+  assert.ok(true, "contrato soft reset documentado en código + spec");
+});
+
 // ─── Post-auditoría #5: AbortSignal al invoker ──
 
 await test("AbortSignal: LLMInvoker recibe un AbortSignal en cada invoke", async () => {

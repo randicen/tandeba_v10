@@ -201,9 +201,10 @@ function setupRevisionGenerica(overrides: Partial<{ hitl: RevisionGenericaHITL; 
   const specialistRegistry = SpecialistRegistry.create({
     tierResolver,
     factories: [
-      { agentId: "intake_specialist_v1", factory: (inv) => new IntakeSpecialist(inv) },
-      { agentId: "clause_reviewer_specialist_v1", factory: (inv) => new ClauseReviewerSpecialist(inv) },
-      { agentId: "verifier_specialist_v1", factory: (inv) => new VerifierSpecialist(inv) },
+      // MAY-7: proveemos preferredModel para evitar la doble construcción.
+      { agentId: "intake_specialist_v1", preferredModel: "liviano", factory: (inv) => new IntakeSpecialist(inv) },
+      { agentId: "clause_reviewer_specialist_v1", preferredModel: "robusto", factory: (inv) => new ClauseReviewerSpecialist(inv) },
+      { agentId: "verifier_specialist_v1", preferredModel: "robusto", factory: (inv) => new VerifierSpecialist(inv) },
     ],
   });
 

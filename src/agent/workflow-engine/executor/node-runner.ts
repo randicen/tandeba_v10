@@ -43,7 +43,6 @@ import type {
 } from "./types.js";
 import type { SpecialistRegistry } from "../../specialists/specialist-registry.js";
 import type { TierResolver } from "../../specialists/tier-resolver.js";
-import { SPECIALIST_AGENT_VERSION } from "../../specialists/specialist.js";
 import Ajv from "ajv";
 
 // ============================================================
@@ -208,7 +207,11 @@ async function runLLMNode(
       logger?.debug(`llm node ${node.id} delegating to specialist ${specialist.agentId}`, {
         nodeId: node.id,
         specialistId: specialist.agentId,
-        specialistVersion: specialist.agentVersion ?? SPECIALIST_AGENT_VERSION,
+        // MIN-11 (audit D2 2026-06-12): el `agentVersion` siempre
+        // está poblado desde D2b.2 (viene del `agentCard.version`,
+        // fuente única de verdad). El fallback a `SPECIALIST_AGENT_VERSION`
+        // era un vestigio de D2b.1 — eliminado.
+        specialistVersion: specialist.agentVersion,
       });
 
       let outcome: NodeExecutionOutcome;
@@ -353,7 +356,10 @@ async function runLLMNode(
       confidence,
       confidenceValue,
       tokensUsed: result.tokensUsed,
-      costUsd: result.costUsd,
+      // MIN-4 (audit D2 2026-06-12): normalizamos a 0 cuando el invoker
+      // no retorna `costUsd`. El motor y el audit downstream siempre
+      // ven un número, nunca undefined.
+      costUsd: result.costUsd ?? 0,
       modelUsed: result.modelUsed ?? resolved.model,
       retryCount: 0,
       startedAt,

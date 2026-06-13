@@ -98,7 +98,7 @@ Finalmente, el verifier con prompt limpio (sub-sesión lógica) es la diferencia
 |---|---|---|
 | 400 (Bad Request) | `INVALID_OUTPUT` (si el response_format es inválido) o `INTERNAL_ERROR` (si el request está mal armado) | false |
 | 401 (Unauthorized) | `INTERNAL_ERROR` (la key es nuestra responsabilidad, no del workflow) | false |
-| 402 (Payment Required) | `MODEL_UNAVAILABLE` (no hay crédito) | false (no tiene sentido retry sin充值) |
+| 402 (Payment Required) | `MODEL_UNAVAILABLE` (no hay crédito) | false (no tiene sentido retry sin recarga) |
 | 408 (Request Timeout) | `TIMEOUT` | true |
 | 422 (Unprocessable Entity) | `INVALID_OUTPUT` (semantic validation failure del modelo) | false |
 | 429 (Too Many Requests) | `RATE_LIMIT` | true |
@@ -627,6 +627,64 @@ class VerifierSpecialist implements Specialist {
   }
 }
 ```
+
+---
+
+## 5.8. Convención de input para nodos verifier (MAY-8, audit 2026-06-12)
+
+**Problema**: el `VerifierSpecialist` recibe `params.state` y `params.node.input` para construir el user prompt. El state contiene el output de TODOS los productores previos; el `node.input` es lo que el workflow autor puso en `input.from`. No hay convención sobre qué path del state apunta al output del productor a verificar. Si el workflow autor setea mal el `input.from`, el verifier valida el state completo en vez del output específico.
+
+**Convención adoptada (D2b.2 → D2c)**:
+
+Para que un nodo verifier trabaje sobre el output del productor, el workflow debe:
+1. Antes del nodo verifier, escribir el output del productor a un path del state (ej: `state.producerOutput`). Esto puede ser un nodo `function` trivial o, más natural, el `output.to` del nodo productor.
+2. El nodo verifier declara `input.from: { path: "producerOutput" }` para apuntar a ese path.
+
+**Ejemplo** (pseudo-workflow):
+```json
+{
+  "nodes": [
+    { "id": "produce", "type": "llm", "assignedSpecialist": "intake_specialist_v1",
+      "input": { "from": { "path": "input.documentContent" } },
+      "output": { "to": { "path": "producerOutput" } } },
+    { "id": "verify",  "type": "llm", "assignedSpecialist": "verifier_specialist_v1",
+      "input": { "from": { "path": "producerOutput" } },
+      "output": { "to": { "path": "verification" } } }
+  ],
+  "edges": [
+    { "from": "produce", "to": "verify" }
+  ]
+}
+```
+
+**Razón de la convención**: el verifier lee el state completo, pero su system prompt le dice que use **solo lo que necesita**. Si el `userPrompt` apunta explícitamente al output del productor (no al state completo), el LLM del verifier tiene menos ambigüedad: "¿esto es coherente con el contexto?" se vuelve "¿este output es coherente con el state?".
+
+**Limitación conocida**: la sub-sesión lógica del verifier sigue siendo **lógica**, no de proceso. El verifier ve el state completo en `userPrompt`. La convención anterior mitiga parcialmente el sesgo confirmatorio, pero no lo elimina. La mitigación completa viene con `read_section` real en D3+ con RAG (§5.13 del roadmap).
+
+**Forward-compat**: en D2c (skills v1), el catálogo de skills puede incluir un "verifier_skill" que automatiza esta convención (escribe el output a un path conocido, declara el input.from en el nodo verifier). Out of scope de D2b.2.
+
+## 5.9. Output shape de nodos verifier (MIN-8, audit 2026-06-12)
+
+**Problema**: cuando un nodo LLM tiene `assignedSpecialist: "verifier_specialist_v1"`, su `NodeResult.output` es un objeto `VerifierOutput` (con `verified`, `confidence`, `notes`, `issues`, `citations`, `verifierSessionId`, `verifiedAt`). NO es un string. Si la UI lo muestra como "output del nodo", va a mostrar `[object Object]`.
+
+**Decisión**: forward-compat. La UI debe discriminar por la `agentCard` del specialist. Concretamente:
+
+```typescript
+const result = await executor.getTask(taskId);
+const nodeResult = result.nodeResults.verify;
+if (nodeResult.metadata?.executedBy?.agentId === "verifier_specialist_v1") {
+  // Es un VerifierOutput. Acceder a nodeResult.output.verified, .issues, etc.
+  const verifierOut = nodeResult.output as VerifierOutput;
+  renderIssues(verifierOut.issues);
+  renderCitations(verifierOut.citations);
+} else {
+  // Otros specialists: output es el shape que el mock/real LLM retornó.
+}
+```
+
+**Forward-compat (D3+)**: agregar `NodeResult.metadata.outputKind: "verifier" | "string" | "object"` para que la UI no tenga que matchear por `agentId`. Out of scope de D2b.2.
+
+**Limitación**: la convención depende de la UI de Worgena (no en D2b.2). Mientras tanto, el call site que renderiza un `NodeResult` debe saber qué specialist lo produjo.
 
 ---
 

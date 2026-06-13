@@ -179,9 +179,10 @@ function setupSpecialists(): D2b1Setup {
   const specialistRegistry = SpecialistRegistry.create({
     tierResolver: tierResolverForRegistry,
     factories: [
-      { agentId: "intake_specialist_v1", factory: (inv) => new IntakeSpecialist(inv) },
-      { agentId: "clause_reviewer_specialist_v1", factory: (inv) => new ClauseReviewerSpecialist(inv) },
-      { agentId: "verifier_specialist_v1", factory: (inv) => new VerifierSpecialist(inv) },
+      // MAY-7: proveemos preferredModel para evitar la doble construcción.
+      { agentId: "intake_specialist_v1", preferredModel: "liviano", factory: (inv) => new IntakeSpecialist(inv) },
+      { agentId: "clause_reviewer_specialist_v1", preferredModel: "robusto", factory: (inv) => new ClauseReviewerSpecialist(inv) },
+      { agentId: "verifier_specialist_v1", preferredModel: "robusto", factory: (inv) => new VerifierSpecialist(inv) },
     ],
   });
   return { livianoInvoker, robustoInvoker, fallbackLLM, tierResolverForRegistry, tierResolverForExecutor, specialistRegistry };
@@ -375,7 +376,17 @@ await test("specialist: VerifierSpecialist verifica output (mock robusto)", asyn
     verified: true,
     confidence: 0.85,
     notes: "El output es consistente con el contexto. Sin issues detectados.",
+    // D2b.2: Citation Grounding v2 + audit metadata. Ver AGENT_D2B_2_SPEC.md §5.7.
+    issues: [],
+    citations: [],
+    verifierSessionId: result.state.verdict.verifierSessionId, // UUID, no lo hardcodeamos
+    verifiedAt: result.state.verdict.verifiedAt, // ISO timestamp, no lo hardcodeamos
   });
+  // Validaciones explícitas de los nuevos campos.
+  assert.ok(typeof result.state.verdict.verifierSessionId === "string");
+  assert.ok(result.state.verdict.verifierSessionId.length >= 32, "verifierSessionId es un UUID");
+  assert.ok(typeof result.state.verdict.verifiedAt === "string");
+  assert.ok(!isNaN(Date.parse(result.state.verdict.verifiedAt)), "verifiedAt es ISO válido");
 });
 
 // ─── Routing del motor (3 tests) ───────────────────────────
@@ -459,7 +470,9 @@ await test("audit: NodeResult.metadata.executedBy tiene agentId, agentVersion, t
   assert.ok(classify.metadata, "classify tiene metadata");
   assert.ok(classify.metadata!.executedBy, "classify.metadata.executedBy presente");
   assert.equal(classify.metadata!.executedBy!.agentId, "intake_specialist_v1");
-  assert.equal(classify.metadata!.executedBy!.agentVersion, "1.0.0-d2b.1");
+  // D2b.2: agentVersion ahora viene del agentCard (semver limpio "1.0.0",
+  // no más "1.0.0-d2b.1"). Ver AGENT_D2B_2_SPEC.md §8.8.
+  assert.equal(classify.metadata!.executedBy!.agentVersion, "1.0.0");
   assert.ok(typeof classify.metadata!.executedBy!.tier === "string");
   assert.ok(typeof classify.metadata!.executedBy!.model === "string");
 });

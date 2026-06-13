@@ -527,8 +527,14 @@ export interface NodeResult {
   /** Tokens consumidos (solo nodos LLM). */
   tokensUsed?: { readonly input: number; readonly output: number };
 
-  /** Costo en USD atribuido a este nodo. */
-  costUsd?: number;
+  /**
+   * Costo en USD atribuido a este nodo. **No opcional** desde audit
+   * D2 2026-06-12 (MIN-5). Para nodos LLM: `usage.cost` de OpenRouter
+   * si está, sino estimación del `PricingCatalog`. Para nodos function
+   * o HITL: 0. Nunca undefined — el audit downstream no tiene que
+   * defenderse.
+   */
+  readonly costUsd: number;
 
   /** Modelo específico usado (resuelto de la tier). */
   modelUsed?: string;

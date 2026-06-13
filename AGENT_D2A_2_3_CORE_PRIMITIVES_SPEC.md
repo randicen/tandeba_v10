@@ -825,7 +825,7 @@ Sin esta limpieza, el próximo developer que lea el código va a tener la misma 
 | **HITL handler responde declined** | Nodo `failure: HITL_DECLINED`. `onError` aplica (default: fail). |
 | **HITL handler responde timeout** | Nodo `failure: HITL_TIMEOUT`. `onError` aplica (default: fail). |
 | **Nodo LLM persiste promptSnapshot** | `NodeResult.promptSnapshot = { system, user, tools }` con los textos interpolados (strings vacíos donde el path no existe). |
-| **`cleanup(taskId)`** | Libera el cache de idempotency pero retiene la task en el map. La task sigue accesible para `replayTask()` y `getTask()`. |
+| **`cleanup(taskId)`** | **Soft reset**: libera el cache de idempotency Y el flag de cancelación de la task. Retiene la task en el map y su workflow asociado. La task sigue accesible para `replayTask()`, `getTask()`, y `resumeTask()` (si estaba `paused_hitl`). El `task.status` y `task.error` no se modifican. **MAY-2 (audit D2 2026-06-12 cleanup #2)**: el spec original solo mencionaba el cache; el flag de cancelación se liberaba en silencio. Ahora sincronizado. |
 | **`purgeTask(taskId)` (nuevo)** | Elimina la task del map, libera cache, libera workflow, libera flag de cancelación. Después de `purgeTask`, la task es irrecuperable. |
 | **Motor crashea durante una task** | La task queda en `running` con `updatedAt` viejo. Workaround manual: `replayTask(taskId, { fromNode: task.currentNode })`. Sweeper automático es D3+. |
 

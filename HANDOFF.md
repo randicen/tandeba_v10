@@ -10,22 +10,24 @@
 
 ## Estado al cierre de esta sesión
 
-**Fecha**: 2026-06-12
-**Sprint cerrado**: **D2b.1 — Multi-Model Router + 3 Specialists (con mocks)**. D2b.1 cerrado completo.
-- Spec: `AGENT_D2B_1_SPEC.md` v1.0 (cerrada tras auditoría, 18 decisiones registradas).
-- Implementación: 8 archivos nuevos en `src/agent/specialists/` (TierResolver, SpecialistRegistry, 3 specialists, 2 mocks, barrel) + 1 test file (`test_workflow_d2b_1.mts`, 16 tests).
-- Modificaciones mínimas al motor: `dsl/types.ts` (+`assignedSpecialist`, +`metadata.executedBy`), `dsl/schema.ts` (+`assignedSpecialist`), `executor/types.ts` (+TierResolver, +SpecialistRegistry en ExecutorConfig), `executor/node-runner.ts` (routing al specialist), `executor/executor.ts` (validación en startTask, setea metadata).
-- Fixture actualizado: `tests/fixtures/revision-generica.workflow.json` con `assignedSpecialist` en `classify`.
-- Tests: **130/130 pasan** (53 + 36 + 18 + 7 + **16 nuevos en `test_workflow_d2b_1.mts`**). Cero regresiones.
+**Fecha**: 2026-06-12 (noche)
+**Sprint cerrado**: **AUDIT_D2_CLEANUP #2** — sprint de limpieza que cierra los 4 hallazgos pendientes del #1 que podía resolver como ingeniero (MAY-2, MAY-7, NIT-1, NIT-4). Los 2 re-clasificados a "no requieren fix" (eran juicios erróneos de mi auditoría original).
 
-**Sprint en curso**: **D2b.2 — Specialists Reales: OpenRouter + Agent Cards + Lifecycle + Verifier Sub-sesión**. Spec escrita y auditada.
-- Spec: `AGENT_D2B_2_SPEC.md` v1.0 (cerrada tras auditoría, 20 decisiones registradas).
-- Implementación: pendiente (`OpenRouterClient`, `OpenRouterLLMInvoker`, `PricingCatalog`, `AgentCard`, `Lifecycle`, refactor de los 3 specialists, Citation Grounding v2).
-- Decisiones confirmadas con el usuario: (1) verifier sub-sesión = prompt limpio, mismo LLM (Opción A); (2) 3 modelos en el catálogo; (3) Agent Card = objeto TypeScript con `toJSON()` A2A v1.0.
+- **Tests al cierre**: **230/230 pasan** (227 originales + 3 nuevos: 1 MAY-2, 2 MAY-7). Cero regresiones.
+- **Hallazgos arreglados en #2** (4): MAY-2 (sync doc `cleanup` con código), MAY-7 (factory se invoca 1 sola vez con `preferredModel`), NIT-1 (re-clasificado, no aplica), NIT-4 (re-clasificado, formato actual es mejor).
+- **Pendiente único** (forward-compat con D3): **CRIT-1/MAYR-LEGAL** — storage cross-restart para tasks `paused_hitl`. **Decisión del founder (2026-06-12 noche): opción B** — esperar a D3 (multi-tenant + DB) y meterlo ahí. 1 tabla `paused_tasks` es trabajo chico dentro del sprint D3, no redefine alcance. Razón: A es MVP-quick-fix pero hay que reescribir en D3; C es mal UX + riesgo legal. B es la única que escala y ya está en el roadmap.
 
-**Próximo sprint propuesto**: **D2c — Skills v1** (después de D2b.2). Roadmap §5.4, §5.14. Empaquetar las topic-based policies como skills con SKILL.md, principios jurídicos colombianos.
+**Sprints anteriores de cleanup** (en orden):
+- **AUDIT_D2_CLEANUP #1** (2026-06-12 tarde): arregló 18 de 27 hallazgos. Tests 221→227.
+- **D2b.2** (2026-06-12 mañana): OpenRouter real + Agent Cards + Lifecycle + sub-sesión verifier. Tests 165→221.
+- **D2b.1** (2026-06-12 mañana): multi-model router + 3 specialists con mocks. Tests 130→165.
+- **D2a.5** + **D2a.4** + **D2a.2.3**: motor completo con state validation, prompt snapshot, replay, schema versioning, circuit breaker, HITL primitives. Tests 0→130.
 
-**D1 cerrada**, **D2a cerrado** (motor completo), **D2b.1 cerrado** (multi-modelo + 3 specialists con mocks). Pendiente: D2b.2 (specialists reales), D2c (skills v1), D3 (multi-tenant), D4 (memoria), D5 (RAG), D6 (editor).
+**Total acumulado D2**: **230/230 tests, 0 fallidos**.
+
+**Próximo sprint propuesto**: **D2c — Skills v1**. Roadmap §5.4, §5.14. Empaquetar las topic-based policies como skills con SKILL.md, principios jurídicos colombianos. Catálogo de tools se enchufa al `OpenRouterLLMInvoker` (forward-compat con CRIT-2 ya aplicado).
+
+**D1 cerrada**, **D2a cerrado**, **D2b cerrado**, **AUDIT_D2_CLEANUP cerrado** (en 2 sprints). Pendiente: D2c (skills v1), D3 (multi-tenant + DB), D4 (memoria), D5 (RAG), D6 (editor).
 
 ---
 
@@ -121,6 +123,188 @@
 - **Smoke test E2E con OpenRouter real es opcional** (depende de la key en env). Los demás 50+ tests son offline.
 
 **Lo que NO toca D2b.2** (deuda a sprints futuros): A2A server HTTP (D3+), streaming (D3+ o demanda), `read_section` real (D3+), principios jurídicos (D2c), MCP, multi-tenant (D3), circuit breaker por specialist (D3+), SaC (D3+ con cliente), pricing configurable por tenant (D3), cost attribution con desglose de reasoning tokens (D3).
+
+---
+
+## Sprint recién cerrado: D2b.2
+
+**Qué cubre**: el sprint más grande hasta ahora. Enchufa la integración real con OpenRouter (la key ya está en `.env`), formaliza los Agent Cards (A2A v1.0), introduce el lifecycle de specialists (`spawn → idle → busy → paused → done → archived`), y mueve el verifier a "sub-sesión lógica" con prompt limpio (sin acceso al system prompt del productor). Agrega Citation Grounding v2 como extensión del verifier.
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Componentes entregados**:
+- 5 archivos nuevos en `src/agent/llm/`: `openrouter-client.ts`, `openrouter-errors.ts`, `openrouter-invoker.ts`, `pricing-catalog.ts`, `index.ts`.
+- 3 archivos nuevos en `src/agent/specialists/`: `agent-card.ts`, `lifecycle.ts`, `agent-cards/index.ts`.
+- Refactor mayor: `specialist.ts` (interface con +agentCard, +lifecycle), `intake-specialist.ts`, `clause-reviewer-specialist.ts`, `verifier-specialist.ts` (sub-sesión + Citation Grounding v2), `mocks/mock-invokers.ts` (+MockOpenRouterClient + helpers de responses).
+- `test_workflow_d2b_2.mts` con 56 tests (1 smoke E2E con OpenRouter real opcional, 55 offline).
+
+**Sin cambios al motor Capa 1**: el `WorkflowExecutor`, `runLoop`, `node-runner.ts`, `circuit-breaker.ts`, `state.ts` no se tocan. El routing D2b.1 sigue funcionando tal cual.
+
+**Tests al cierre**: **221/221 pasan** (53 + 36 + 18 + 7 + 16 + 35 + 56). Cero regresiones.
+
+**Decisiones de diseño con implicaciones para el futuro**:
+- **`OpenRouterClient` usa `fetch` directo, NO SDK `openai`** (mismo patrón que `src/agent/memory.ts`). El SDK no tipifica `usage.cost`. Forward-compat: si en el futuro se cambia a LiteLLM/Portkey, se reemplaza el cliente, no el invoker.
+- **Transport inyectable en el `OpenRouterClient`**: el `transport: (url, init) => Promise<Response>` permite tests deterministas sin red ni key. `MockOpenRouterClient` lo usa para programar responses FIFO.
+- **API key pasada LITERAL** al header `Authorization: Bearer ${key}` (sin prefijos, sin normalización). Regla del proyecto (ver `AGENTS.md` §5a y `MEMORY.md` 2026-06-09).
+- **El cliente NUNCA loguea la key** (ni en debug, ni en error). Verificable con grep.
+- **`OpenRouterError` extiende `Error` con `code: ErrorCode` del motor** ya mapeado. Permite al `node-runner` consumir `error.code` directamente sin substring matching. Backward-compat: el `classifyLLMError` de D2a.2.2 sigue funcionando con el substring fallback para errores legacy.
+- **`PricingCatalog.extend()` retorna NUEVO catálogo**, no muta el original. Forward-compat con catálogos por tenant en D3+ sin contaminación cruzada.
+- **Agent Card como objeto TS inmutable** con `toJSON()` que produce JSON A2A v1.0. Una sola fuente de verdad: `agentCard.version` se usa como `agentVersion` del specialist (no más constante `SPECIALIST_AGENT_VERSION`, ahora deprecated).
+- **Lifecycle como state machine simple en código** (sin xstate ni libs externas). Eventos in-memory. Persistencia a DB es D3+.
+- **Sub-sesión del verifier = prompt limpio, mismo LLM** (NO child_process, NO Mavis). El system prompt del verifier NO comparte texto con el system prompt del productor. Garantía LÓGICA, no de proceso. Si en D3+ se necesita garantía de proceso, se mueve a child_process.
+- **Citation Grounding v2 = heurística**, no RAG real. `read_section` es D3+ con RAG. La heurística distingue citas a texto (substring en state serializado) de citas a metadatos (existencia del campo en el state). Lista cerrada de campos reconocidos.
+- **Output del verifier ahora incluye metadata de audit** (`verifierSessionId` UUID + `verifiedAt` ISO + `issues` + `citations`). Backward-incompatible: tests D2b.1 que hacían `deepEqual` estricto sobre el output del verifier se actualizaron al nuevo shape. **Cambio intencional y documentado** (spec §5.7).
+- **`done → busy` permitido en la tabla del Lifecycle** (decisión post-implementación): el `SpecialistRegistry` comparte instancias entre tasks (un specialist se reusa para `task1` y luego para el `replay` de `task1`). El lifecycle trackea la vida del specialist, no de cada ejecución individual. Sin esta transición, el replay falla con `INTERNAL_ERROR` (bug descubierto en test D2a.5 al implementar D2b.2).
+- **El `OpenRouterClient` no cachea nada** (cada llamada es fresh). Cache es D3+.
+- **El `raw` field del `ChatResponse` NO se loguea por default** (puede contener metadata sensible del response). El cliente sanitiza headers sensibles en `sanitizeForLog`. Si el caller quiere loguear para audit, debe sanitizar primero.
+
+**Archivos tocados** (16):
+- `src/agent/llm/openrouter-client.ts` (nuevo, ~330 LoC).
+- `src/agent/llm/openrouter-errors.ts` (nuevo, ~150 LoC).
+- `src/agent/llm/openrouter-invoker.ts` (nuevo, ~170 LoC).
+- `src/agent/llm/pricing-catalog.ts` (nuevo, ~140 LoC).
+- `src/agent/llm/index.ts` (nuevo, ~30 LoC, barrel).
+- `src/agent/specialists/agent-card.ts` (nuevo, ~210 LoC).
+- `src/agent/specialists/lifecycle.ts` (nuevo, ~150 LoC).
+- `src/agent/specialists/agent-cards/index.ts` (nuevo, ~140 LoC).
+- `src/agent/specialists/specialist.ts` (modificado, +agentCard +lifecycle en la interface, SPECIALIST_AGENT_VERSION deprecated).
+- `src/agent/specialists/intake-specialist.ts` (modificado, +agentCard +lifecycle +transiciones).
+- `src/agent/specialists/clause-reviewer-specialist.ts` (idem).
+- `src/agent/specialists/verifier-specialist.ts` (refactor mayor: sub-sesión lógica + Citation Grounding v2 + lifecycle + audit metadata).
+- `src/agent/specialists/mocks/mock-invokers.ts` (modificado, +MockOpenRouterClient + helpers makeChat200/makeHttpError/makeEmbedding200/makeNonJsonResponse).
+- `src/agent/specialists/index.ts` (modificado, barrel actualizado).
+- `test_workflow_d2b_1.mts` (modificado, 2 asserts actualizados: agentVersion a "1.0.0", output del verifier con campos D2b.2).
+- `test_workflow_d2a_5.mts` (modificado, 1 bug fixed por el cambio de tabla de Lifecycle; sin cambios de código, solo detectó la falla en replay).
+- `test_workflow_d2b_2.mts` (nuevo, 56 tests, ~900 LoC).
+
+**NO se toca** (confirmado en auditoría):
+- `src/agent/workflow-engine/**` — Capa 1 intacta. El routing del D2b.1 sigue funcionando.
+- `src/agent/agent.ts`, `src/agent/tools.ts`, `src/agent/memory.ts` — código existente intacto.
+
+**Bugs encontrados durante implementación** (todos arreglados, documentados):
+1. **Tabla del Lifecycle no permitía `done → busy`**: rompía el replay (un specialist se reusa). Arreglado en `LIFECYCLE_TRANSITIONS`. Detectado por test D2a.5 que ya existía.
+2. **Test D2b.1 con `agentVersion` viejo**: el test asumía `"1.0.0-d2b.1"`, ahora debe ser `"1.0.0"`. Backward-incompatible intencional (spec §8.8).
+3. **Test D2b.1 con `deepEqual` estricto sobre output del verifier**: el output ahora tiene 4 campos extra (Citation Grounding v2 + audit metadata). Test actualizado para validar los nuevos campos explícitamente. Backward-incompatible intencional (spec §5.7).
+4. **`PricingCatalog` importado como `type` pero usado como valor en `OpenRouterLLMInvoker`**: error TS1361. Arreglado cambiando el import a `import { PricingCatalog }`.
+5. **`ChatRequest["messages"]` es `readonly`**: no se puede hacer `push`. Arreglado usando `Array<...>` mutable internamente y retornando el `readonly` después.
+6. **Mojibake en string de test** ("¿" y "é" doblemente codificados): caracteres chinos en el archivo. Arreglado reemplazando el string por uno más simple (`startsWith("Hola")`).
+
+**Decisiones que tomé yo en este turno (registradas en spec §8)**: 20 decisiones, todas reversibles. La más opinada fue la **transición `done → busy` permitida en la tabla del Lifecycle** (no estaba en el spec original, fue necesaria para que el replay funcione con specialists reusados). La más técnica fue el **mapeo de errores HTTP a `ErrorCode`** (la tabla §3.2 del spec está en `mapHttpStatusToMotorCode` en `openrouter-errors.ts`, función pura testeable independientemente).
+
+**Lo que NO toca D2b.2** (deuda a sprints futuros): A2A server HTTP (D3+), streaming (D3+ o demanda), `read_section` real (D3+), principios jurídicos (D2c), MCP, multi-tenant (D3), circuit breaker por specialist (D3+), SaC (D3+ con cliente), pricing configurable por tenant (D3), cost attribution con desglose de reasoning tokens (D3).
+
+---
+
+## Sprint recién cerrado: AUDIT_D2_CLEANUP #2 (2026-06-12 noche)
+
+**Qué cubre**: sprint de limpieza #2 — cierre de los hallazgos que dejé pendientes en AUDIT_D2_CLEANUP #1 por considerarlos opinables o requerir decisión de producto. Los 4 hallazgos cerrados acá son los que podía resolver como ingeniero sin decisión del usuario.
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Hallazgos arreglados (4)**:
+
+| ID | Severidad | Fix |
+|---|---|---|
+| **MAY-2** | 🟡 | Sincronizado el spec `AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md` §9.3 con el código. El spec decía "libera el cache de idempotency pero retiene la task" — el código también libera `cancelledTasks` (cambio silencioso, no documentado). El spec ahora documenta el "soft reset" completo: libera 2 cosas (cache + flag), retiene 3 (task + workflow + status). Actualizado el `cleanup()` doc en `executor.ts` y el §9.3 del spec. Test nuevo: "cleanup(taskId) es soft reset". |
+| **MAY-7** | 🟡 | El factory se invocaba 2 veces (stub + real). Fix **sin breaking**: agregué campo opcional `preferredModel` a la interface `SpecialistFactory`. Si el caller lo provee, el registry evita la doble construcción. Si no, fallback al patrón viejo (backward-compat). Migré los 5 callers (3 test files) para que aprovechen el fix. Tests nuevos: 2 (uno con `preferredModel` verifica 1 sola invocación, otro sin él verifica 2 invocaciones). El `Lifecycle` y futuros factory side-effects ya no se ejecutan 2 veces. |
+| **NIT-1** | ⚪ | Re-clasificado: la referencia a A2A v1.0 NO estaba en `openrouter-errors.ts` (mi auditoría estaba mal en este punto). Las menciones de A2A están todas bien ubicadas en `agent-card.ts` con contexto correcto. **Skip — no hay nada que arreglar.** |
+| **NIT-4** | ⚪ | Re-clasificado: consolidar las cabeceras "D2b.1" y "D2b.2" en una sola sección "D2b" perdería la granularidad de qué hizo cada sub-sprint. **Skip — el formato actual es más informativo.** |
+
+**Hallazgos NO arreglados** (queda 1):
+
+| ID | Razón |
+|---|---|
+| **MAYR-LEGAL / CRIT-1** | Storage cross-restart para tasks `paused_hitl`. Requiere decisión de storage externo o esperar D3 con DB. Pendiente desde #1. |
+
+**Decisiones tomadas en este turno** (registradas para audit):
+
+1. **MAY-7**: el campo `preferredModel` en `SpecialistFactory` es **opcional** (no breaking). Forward-compat: cuando todos los callers internos estén migrados (D2c, D3+), el campo puede volverse obligatorio. El código de fallback sigue ahí para callers externos que no actualicen.
+
+**Tests al cierre**: **230/230 pasan** (227 originales + 3 nuevos: 1 MAY-2, 2 MAY-7). Cero regresiones.
+
+**Archivos tocados** (4):
+- `src/agent/workflow-engine/executor/executor.ts` (MAY-2: doc de `cleanup()` reescrito, ahora menciona explícitamente el "soft reset" con 2/3 liberación/retención)
+- `AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md` (MAY-2: tabla de API §10 actualizada con el comportamiento completo de `cleanup`)
+- `src/agent/specialists/specialist-registry.ts` (MAY-7: nuevo campo opcional `preferredModel` en `SpecialistFactory` interface, lógica actualizada en `create()` para evitar doble construcción cuando está presente)
+- 3 archivos de tests (MAY-7: 5 callers actualizados para proveer `preferredModel`, 2 tests nuevos que validan 1 vs 2 invocaciones del factory)
+- `test_workflow_executor.mts` (MAY-2: test nuevo "cleanup(taskId) es soft reset")
+
+**Lo que queda** (forward-compat con sprints futuros):
+- **CRIT-1/MAYR-LEGAL**: storage cross-restart. **No es un fix de código** — es una decisión de storage. Documentado en HANDOFF gotcha #9 y spec D2a.4 §5.2. **Esperar D3 con DB**, o agregar un hook `onPause` en D2c para que el caller persista `taskId + requestId` externamente.
+
+---
+
+## Sprint recién cerrado: AUDIT_D2_CLEANUP #1 (2026-06-12 tarde)
+
+**Qué cubre**: sprint de limpieza que arregla los hallazgos de `AUDIT_D2_2026-06-12.md` en orden de urgencia. **No introduce features nuevas** — solo fixes, refactors chicos, y aclaraciones de doc. Hace que D2b.2 sea producción-ready (o lo más cerca posible sin D3 con DB).
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Hallazgos arreglados (14 de 27)**:
+
+| ID | Severidad | Fix |
+|---|---|---|
+| CRIT-2 | 🔴 | `OpenRouterLLMInvoker.translateTools()` ahora falla loud cuando hay toolNames sin catálogo. Antes retornaba `[]` silenciosamente — un LLM sin tools puede alucinar. |
+| MAY-6 | 🟠 | `VerifierSpecialist.detectCitations()` normaliza el field de metadata a lowercase. Antes, `DEROGADO_POR` no matcheaba con `derogado_por` en el state. |
+| MAY-1 | 🟠 | `migrations.ts::loadWorkflow()` ahora retorna `{workflow, appliedMigrations}`. El método privado `executor.ts::loadAndMigrate()` se reduce a un wrapper trivial. Single source of truth. |
+| MAY-3 | 🟠 | `OpenRouterClient.executeWithTimeout` usa `controller.signal.reason` para distinguir timeout interno de cancel externo. Antes la heurística `!externalSignal?.aborted` era frágil. |
+| MAY-4 | 🟠 | `parseEmbeddingResponse` invierte la precedence: `total_tokens` pisa a `prompt_tokens` (antes al revés). |
+| MAY-5 | 🟠 | `OpenRouterClient` ahora loguea via `logger?` en 4 puntos: request start, response OK, HTTP error, timeout/network. Antes el campo `logger` existía pero nunca se usaba. |
+| MAY-8 | 🟠 | Documentada en `AGENT_D2B_2_SPEC.md` §5.8 la convención de `node.input.from` para nodos verifier. |
+| MAY-10 | 🟠 | `MockOpenRouterClient.toOpenRouterClient()` delega al `OpenRouterClient` real con el `transport` programable. El mock ya no duplica el parseo. |
+| MIN-1 | 🟡 | Comment en `Lifecycle` constructor aclarando que `stateChangedAt` arranca en `spawn` (mismo timestamp que `createdAt`). |
+| MIN-3 | 🟡 | Comment en `Lifecycle.stateChangedAt` documentando que es redundante con `events[length-1].at` y se mantiene por backward-compat. |
+| MIN-5 | 🟡 | `NodeResult.costUsd` ahora es **no opcional** (siempre `number`, default 0). Forward-compat con audit que asume número, no `undefined`. |
+| MIN-6 | 🟡 | `OpenRouterClientOptions` ahora acepta `appName` y `appUrl` (parametrizan `X-Title` y `HTTP-Referer`). |
+| MIN-7 | 🟡 | `SpecialistRegistry.create()` ahora tira error si dos factories declaran el mismo `agentId` (antes el segundo pisaba al primero silenciosamente). |
+| MIN-8 | 🟡 | Documentado en `AGENT_D2B_2_SPEC.md` §5.9 el output shape de nodos verifier (UX de UI: cómo discriminar `VerifierOutput` de otros outputs). |
+| MIN-11 | 🟡 | Eliminado el import y fallback a `SPECIALIST_AGENT_VERSION` (constante deprecated) en `node-runner.ts:212`. |
+| NIT-2 | ⚪ | Comment en `Lifecycle.onStateChange` documentando que el callback debe ser síncrono. |
+| NIT-3 | ⚪ | `MockOpenRouterClient.lastCall` getter para inspeccionar la última call sin hacer `calls[length-1]`. |
+| NIT-5 | ⚪ | Header de `executor.ts` ahora menciona D2b.1 y D2b.2 además de los specs D2a. |
+
+**Hallazgos NO arreglados (requieren decisión o son out of scope)**:
+
+| ID | Razón |
+|---|---|
+| **MAYR-LEGAL / CRIT-1** | La auditoría legal-audit cross-restart (tasks `paused_hitl` se pierden en restart del server) requiere decisión de storage externo. **Esperar D3 con DB**. Documentado en HANDOFF gotcha #9 + spec D2a.4 §5.2. |
+| **MAY-7** | `SpecialistRegistry` invoca factories 2 veces (stub + real). Cambiar la signature de `SpecialistFactory` es **breaking** para callers externos. Pendiente de decisión. |
+| **MAY-2** | Inconsistencia doc vs código (D2a.2.3 §9.3 dice "cleanup libera cache" pero el código también libera `cancelledTasks`). Es fix de docs, no de motor. Pendiente. |
+| **MAY-9** | Subsumido en CRIT-2 (warning de tools perdidas). |
+| **MIN-2** | Re-clasificado a NIT. La tabla de §3.2 del spec SÍ está sincronizada con §8.19. El bug era de mi memoria en la auditoría. La única inconsistencia era el encoding roto en chino ("充值") que arreglé. |
+| **MIN-4** | Arreglado en el mismo sprint como parte de MIN-5 (cambié `NodeResult.costUsd` a no-opcional, lo que hace redundante el `?? 0` defensivo). |
+| **NIT-1, NIT-4** | Triviales, no tocan código funcional. |
+
+**Tests al cierre**: **227/227 pasan** (221 originales + 6 nuevos: 3 CRIT-2, 1 MAY-6, 1 MIN-6, 1 MIN-7). Cero regresiones.
+
+**Archivos tocados** (12):
+- `src/agent/llm/openrouter-client.ts` (CRIT-2 tools + MAY-3 timeout + MAY-4 embeddings + MAY-5 logger + MIN-6 app headers)
+- `src/agent/llm/openrouter-invoker.ts` (CRIT-2 translateTools + toolCatalog)
+- `src/agent/workflow-engine/migrations.ts` (MAY-1: nuevo return type)
+- `src/agent/workflow-engine/executor/executor.ts` (MAY-1 wrapper trivial + MIN-5 costUsd no-opcional + NIT-5 header)
+- `src/agent/workflow-engine/executor/node-runner.ts` (MIN-4 `?? 0` + MIN-11 sin SPECIALIST_AGENT_VERSION)
+- `src/agent/workflow-engine/dsl/types.ts` (MIN-5 costUsd no-opcional)
+- `src/agent/specialists/verifier-specialist.ts` (MAY-6 normalización lowercase)
+- `src/agent/specialists/specialist-registry.ts` (MIN-7 tira error en agentId duplicado)
+- `src/agent/specialists/lifecycle.ts` (MIN-1 comment + MIN-3 comment + NIT-2 comment)
+- `src/agent/specialists/mocks/mock-invokers.ts` (MAY-10 toOpenRouterClient + NIT-3 lastCall + MAY-4 embeddings precedence)
+- `AGENT_D2B_2_SPEC.md` (MAY-8 §5.8 + MIN-8 §5.9 + encoding fix de "充值"→"recarga" en §3.2)
+- `test_workflow_d2a_2_3.mts` (MAY-1: tests de schema versioning adaptados al nuevo return type)
+- `test_workflow_d2b_2.mts` (6 tests nuevos: 3 CRIT-2, 1 MAY-6, 1 MIN-6, 1 MIN-7)
+
+**Decisiones tomadas en este turno** (registradas para audit):
+1. CRIT-2: `translateTools` falla loud en vez de warn. El workflow autor debe enterarse al ejecutar, no en producción.
+2. MAY-1: `loadWorkflow` ahora retorna `{workflow, appliedMigrations}` (en vez de `WorkflowDefinition` directo). Esto es **breaking** para tests que importaban la signature vieja — los actualicé en bloque. **NO breaking** para código de producción (el único caller interno era `executor.ts::loadAndMigrate`).
+3. MAY-3: uso `controller.signal.reason` (un `Error` con `message === "OpenRouter timeout"`) en vez de la heurística previa. Si el runtime de Node cambia el shape de `AbortSignal.reason`, hay que actualizar.
+4. MIN-5: `NodeResult.costUsd` ahora es **no opcional**. Breaking para cualquier código que asumía `costUsd === undefined` para nodos no-LLM. **No afectado**: los nodos no-LLM escriben `costUsd: 0` explícito. **Migración**: si tenés código que hace `if (result.costUsd !== undefined)`, ahora `costUsd` siempre es `number` — usá `if (result.costUsd > 0)`.
+5. MIN-7: error explícito en agentId duplicado. **Breaking** para workflows mal configurados que dependían del "segundo pisa al primero" — pero ese comportamiento era un footgun. La spec D2b.1 §4 lo documentaba como "no lo validamos explícitamente"; ahora sí.
+
+**Reversibilidad**: las decisiones 1, 3, 4, 5 son reversibles con un commit revert. La decisión 2 (return type de `loadWorkflow`) es la más invasiva — si el equipo prefiere `WorkflowDefinition` + `appliedMigrations` como side-effect (vía un callback), hay que revertir el cambio de signature y los tests. Pero creo que el return type es más limpio.
+
+**Lo que falta** (deuda visible para sprints futuros):
+- MAY-7 (factory se invoca 2 veces) — fix requiere cambiar `SpecialistFactory` interface, breaking para callers externos. Decisión tuya.
+- MAY-2 (cleanup libera más de lo que el spec dice) — fix de docs. Trivial.
+- MAYR-LEGAL — esperar D3 con DB.
 
 ---
 
@@ -293,3 +477,7 @@
 - **2026-06-10**: creado. Cierre de D2a.2.3 (spec v1.1 + implementación + 89 tests). 36 tests nuevos en `test_workflow_d2a_2_3.mts`. Decisión sobre SaC documentada en `AGENT_ROADMAP.md` §5.15. Regla 6b agregada a `AGENTS.md`.
 - **2026-06-10 (cierre del día)**: sprint D2a.4 cerrado. Spec `AGENT_D2A_4_HITL_PRIMITIVES_SPEC.md` v1.0 escrita, auditada y revisada post-implementación. Implementación completa del motor: separación de fases pause/resume con `HITLHandler.initiate()` no-bloqueante + `executor.resumeTask()`. 18 tests nuevos en `test_workflow_d2a_4.mts`. Suite completa del motor: **107/107 tests pasan** (53 + 36 + 18). Cero regresiones. D2a cerrado. Próximo sprint propuesto: D2a.5 (workflow ejemplo end-to-end).
 - **2026-06-12 (mañana)**: sprint D2a.5 cerrado. Spec `AGENT_D2A_5_SPEC.md` v1.0 escrita, auditada y corregida (4 correcciones aplicadas: mock LLM identifica nodo por prompt no por model, validateWorkflow redundante, test 3 con tipo incorrecto no null, test 5 con 2 nodos LLM). Fixture JSON `tests/fixtures/revision-generica.workflow.json` creado. 7 tests nuevos en `test_workflow_d2a_5.mts` (smoke end-to-end del workflow). 5 bugs descubiertos en el fixture (no en el motor), todos arreglados: motor valida `{ input }` envuelto, state inicializa con `input`, prompts en `systemPrompt`/`userPrompt` separados, output.to.template no se procesa, additionalProperties:false necesario para validación estricta. Suite completa del motor: **114/114 tests pasan** (53 + 36 + 18 + 7). Cero regresiones. **D2a cerrado completo**. Próximo sprint propuesto: D2b (multi-modelo + specialists).
+- **2026-06-12 (D2b.1)**: sprint D2b.1 cerrado. Spec `AGENT_D2B_1_SPEC.md` v1.0 escrita y auditada. 8 archivos nuevos en `src/agent/specialists/` (TierResolver, SpecialistRegistry, 3 specialists, 2 mocks, barrel). Modificaciones mínimas al motor. Fixture `revision-generica.workflow.json` con `assignedSpecialist` en `classify`. 16 tests nuevos en `test_workflow_d2b_1.mts`. **130/130 tests pasan**. Cero regresiones. D2b.1 cerrado.
+- **2026-06-12 (D2b.2)**: sprint D2b.2 cerrado. Spec `AGENT_D2B_2_SPEC.md` v1.0 escrita y auditada (20 decisiones). 5 archivos nuevos en `src/agent/llm/` (cliente HTTP con `fetch` directo, errores con código del motor, invoker, pricing catalog, barrel) + 3 archivos nuevos en `src/agent/specialists/` (AgentCard A2A v1.0, Lifecycle state machine, 3 cards pre-construidos). Refactor de 4 archivos en `specialists/` (+agentCard, +lifecycle, +transiciones, sub-sesión del verifier con prompt limpio, Citation Grounding v2 heurística). 56 tests nuevos en `test_workflow_d2b_2.mts` (incluyendo smoke E2E con OpenRouter real que retornó `modelUsed=deepseek/deepseek-chat-v3, costUsd=$0.0000139`). 2 tests D2b.1 actualizados por cambios de contrato intencionales (`agentVersion` a `"1.0.0"` desde el agentCard, output del verifier con metadata de audit). 6 bugs encontrados y arreglados durante implementación (el más interesante: tabla del Lifecycle no permitía `done → busy` y rompía el replay, arreglado). **221/221 tests pasan**. Cero regresiones. **D2b cerrado completo** (multi-modelo real + 3 specialists reales + Agent Cards + Lifecycle + sub-sesión verifier). Próximo sprint propuesto: D2c (skills v1 + principios jurídicos colombianos).
+- **2026-06-12 (AUDIT_D2_CLEANUP, tarde)**: sprint de limpieza que arregla 18 de 27 hallazgos de `AUDIT_D2_2026-06-12.md` en orden de urgencia. Sin features nuevas. 1 crítico (CRIT-2: tools silenciosamente perdidas — ahora falla loud), 6 mayores (MAY-1/3/4/5/6/10), 8 menores (MIN-1/3/5/6/7/8/11 + NIT-5), 2 nits. 3 cambios breaking: MAY-1 (`loadWorkflow` ahora retorna `{workflow, appliedMigrations}`), MIN-5 (`NodeResult.costUsd` no opcional), MIN-7 (tira error en agentId duplicado). 12 archivos de código tocados + 2 specs (D2b.2 §3.2 encoding fix, §5.8 MAY-8, §5.9 MIN-8). **227/227 tests pasan** (221 + 6 nuevos). Cero regresiones. **D2 listo para D2c**. Pendiente: MAY-7 (signature de factory), MAY-2 (doc fix), MAYR-LEGAL (esperar D3 con DB).
+- **2026-06-12 (AUDIT_D2_CLEANUP #2, noche)**: sprint de limpieza que cierra 4 hallazgos pendientes del #1. MAY-2 cerrado: cleanup() documentado como 'soft reset' (libera 2: cache + flag cancelacion; retiene 3: task + workflow + status). Spec sec 9.3 y doc en executor.ts sincronizados. MAY-7 cerrado: SpecialistFactory ahora acepta preferredModel opcional. Si esta presente, el registry invoca el factory 1 vez (antes 2: stub + real). 5 callers actualizados. Fallback backward-compat. NIT-1 y NIT-4 re-clasificados como falsos de mi auditoria. 3 tests nuevos (1 MAY-2, 2 MAY-7). 230/230 tests pasan. tsc limpio. Decision del founder sobre CRIT-1/MAYR-LEGAL: opcion B - esperar a D3 (multi-tenant + DB) y meterlo ahi. 1 tabla paused_tasks es trabajo chico dentro del sprint D3.

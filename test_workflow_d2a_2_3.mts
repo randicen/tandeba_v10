@@ -684,9 +684,10 @@ await test("replay: workflow removido del catálogo → ExecutorError TASK_NOT_F
 await test("schema version: workflow con schemaVersion = target → loadWorkflow retorna tal cual", () => {
   const wf = singleFunctionWorkflow("sv-1");
   const registry: MigratorRegistry = new Map();
-  const result = loadWorkflow(wf, registry, 1);
-  assert.equal(result, wf, "mismo objeto, sin migración");
-  assert.equal(result.schemaVersion, 1);
+  const { workflow, appliedMigrations } = loadWorkflow(wf, registry, 1);
+  assert.equal(workflow, wf, "mismo objeto, sin migración");
+  assert.equal(workflow.schemaVersion, 1);
+  assert.equal(appliedMigrations.length, 0, "no hubo migraciones aplicadas");
 });
 
 await test("schema version: workflow con schemaVersion > target → ExecutorError SCHEMA_VERSION_UNSUPPORTED", () => {
@@ -703,9 +704,10 @@ await test("schema version: workflow con schemaVersion < target y migrador regis
   const wf = { ...singleFunctionWorkflow("sv-3"), schemaVersion: 1 as 1 };
   const registry: MigratorRegistry = new Map();
   registry.set("1->2", (w) => ({ ...w, schemaVersion: 2 as 1, name: w.name + "_v2" }));
-  const result = loadWorkflow(wf, registry, 2);
-  assert.equal(result.schemaVersion, 2);
-  assert.ok(result.name.endsWith("_v2"), "migrador aplicó rename");
+  const { workflow, appliedMigrations } = loadWorkflow(wf, registry, 2);
+  assert.equal(workflow.schemaVersion, 2);
+  assert.ok(workflow.name.endsWith("_v2"), "migrador aplicó rename");
+  assert.deepEqual(appliedMigrations, ["1->2"], "trackea migración aplicada");
 });
 
 await test("schema version: workflow con schemaVersion < target y migrador FALTANTE → ExecutorError con mensaje claro", () => {
@@ -727,9 +729,10 @@ await test("schema version: cadena de migradores 1→2→3, motor en v3, ambos r
   const registry: MigratorRegistry = new Map();
   registry.set("1->2", (w) => ({ ...w, schemaVersion: 2 as 1, name: w.name + "_v2" }));
   registry.set("2->3", (w) => ({ ...w, schemaVersion: 3 as 1, name: w.name + "_v3" }));
-  const result = loadWorkflow(wf, registry, 3);
-  assert.equal(result.schemaVersion, 3);
-  assert.ok(result.name.endsWith("_v3"), "ambos migradores aplicaron");
+  const { workflow, appliedMigrations } = loadWorkflow(wf, registry, 3);
+  assert.equal(workflow.schemaVersion, 3);
+  assert.ok(workflow.name.endsWith("_v3"), "ambos migradores aplicaron");
+  assert.deepEqual(appliedMigrations, ["1->2", "2->3"], "trackea las 2 migraciones en orden");
 });
 
 await test("schema version: migrador que tira a mitad de ejecución → ExecutorError, no shape parcial", () => {
@@ -994,8 +997,8 @@ await test("varios: workflow con schemaVersion no numérico (ej: 'v1') no se pue
   // Si pasamos schemaVersion no numérico al motor, el motor lo trata como number
   // porque el tipo es `number` en loadWorkflow. A nivel de tipos, no se puede.
   // Esto es más un test de type safety que de runtime.
-  const result = loadWorkflow(wf, registry, 1);
-  assert.equal(result, wf);
+  const { workflow } = loadWorkflow(wf, registry, 1);
+  assert.equal(workflow, wf);
 });
 
 await test("varios: NodeExecutionPaused ya no existe en el union type (type-level)", () => {

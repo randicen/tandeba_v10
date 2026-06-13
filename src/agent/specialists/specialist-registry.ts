@@ -71,6 +71,18 @@ import type { TierResolver } from "./tier-resolver.js";
  */
 export interface SpecialistFactory {
   readonly agentId: string;
+  /**
+   * MAY-7 (audit D2 2026-06-12 cleanup #2): modelo preferido del
+   * specialist. **Opcional** por backward-compat. Si está presente,
+   * el registry evita construir el specialist dos veces (una vez
+   * con un invoker stub para leer `preferredModel`, otra vez con
+   * el invoker real). Si está ausente, se usa el patrón viejo
+   * (doble construcción).
+   *
+   * Forward-compat: cuando todos los callers migren, este campo
+   * puede ser obligatorio.
+   */
+  readonly preferredModel?: import("../specialists/tier-resolver.js").ModelRef;
   readonly factory: (invoker: import("../workflow-engine/executor/types.js").LLMInvoker) => Specialist;
 }
 
@@ -126,22 +138,39 @@ export class SpecialistRegistry {
     readonly factories: readonly SpecialistFactory[];
   }): SpecialistRegistry {
     const map = new Map<string, Specialist>();
-    for (const { agentId, factory } of params.factories) {
-      // Construimos un specialist "stub" para leer su `preferredModel`.
-      // Esto requiere un truco: el factory se llama una vez con un
-      // invoker descartable solo para leer `preferredModel`, luego
-      // lo descartamos y construimos el real. En D2b.1 los specialists
-      // son livianos (no tienen estado de constructor), así que esto
-      // es barato. Si en D2b.2 los constructors son caros, el patrón
-      // se refactoriza (ej: factories que retornan metadata + factory).
+    for (const factoryDesc of params.factories) {
+      const { agentId, factory } = factoryDesc;
+      // MIN-7 (audit D2 2026-06-12): el `set` silencioso del primer
+      // specialist era un bug latente. En D2b.2 con multi-tenant (D3+)
+      // se vuelve un problema real. Ahora tira si el agentId está
+      // duplicado. En single-tenant / single-registro no afecta.
+      if (map.has(agentId)) {
+        throw new Error(
+          `SpecialistRegistry: agentId "${agentId}" declarado en más de una factory. ` +
+            `Cada factory debe tener un agentId único. Si querés sobreescribir un specialist, ` +
+            `remové el anterior del array factories.`,
+        );
+      }
+      // MAY-7 (audit D2 2026-06-12 cleanup #2): antes, el factory se
+      // llamaba DOS veces — una vez con un invoker descartable para leer
+      // `preferredModel`, otra vez con el invoker real. Eso es 2
+      // side effects por cada specialist (en D2b.2, el `Lifecycle` se
+      // inicializaba 2 veces; en D3+ si el factory hace I/O sería peor).
       //
-      // Más limpio: cada factory provee su agentId + preferredModel
-      // directamente, y el invocador se resuelve en build-time. Pero
-      // eso obliga a duplicar el agentId/preferredModel en el factory
-      // descriptor. Mantengo el patrón "construir stub" por simplicidad.
-      const stubInvoker = params.tierResolver.resolve("liviano").invoker;
-      const stub = factory(stubInvoker);
-      const invoker = params.tierResolver.resolve(stub.preferredModel).invoker;
+      // Solución: si el factory provee `preferredModel` (opcional en
+      // `SpecialistFactory`), el registry evita el doble constructor.
+      // Si no, fallback al patrón viejo por backward-compat.
+      let preferredModel: import("../specialists/tier-resolver.js").ModelRef;
+      if (factoryDesc.preferredModel !== undefined) {
+        preferredModel = factoryDesc.preferredModel;
+      } else {
+        // Fallback: construir stub para leer `preferredModel`. Patrón
+        // viejo, deprecated. Migrar factories gradualmente.
+        const stubInvoker = params.tierResolver.resolve("liviano").invoker;
+        const stub = factory(stubInvoker);
+        preferredModel = stub.preferredModel;
+      }
+      const invoker = params.tierResolver.resolve(preferredModel).invoker;
       const real = factory(invoker);
       map.set(agentId, real);
     }

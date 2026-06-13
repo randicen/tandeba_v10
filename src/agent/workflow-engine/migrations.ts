@@ -79,16 +79,32 @@ export type MigratorRegistry = Map<string, Migrator>;
 // ============================================================
 
 /**
+ * Resultado de aplicar migraciones a un workflow.
+ *
+ * - `workflow`: el workflow efectivo (post-migración, o el original si no
+ *   hubo migración).
+ * - `appliedMigrations`: lista de keys `"${from}->${to}"` que se aplicaron.
+ *   Vacía si no hubo migración.
+ *
+ * El caller (WorkflowExecutor) usa `appliedMigrations` para setear
+ * `Task.appliedMigrations` en audit (`AGENT_D2A_2_3_CORE_PRIMITIVES_SPEC.md` §7.4).
+ */
+export interface LoadWorkflowResult {
+  readonly workflow: WorkflowDefinition;
+  readonly appliedMigrations: readonly string[];
+}
+
+/**
  * Carga un workflow aplicando migradores del registry si es necesario.
  *
  * Comportamiento:
- * - Si `workflow.schemaVersion === targetVersion`, retorna el workflow tal cual.
+ * - Si `workflow.schemaVersion === targetVersion`, retorna el workflow tal cual con `appliedMigrations: []`.
  * - Si `workflow.schemaVersion > targetVersion`, tira `ExecutorError` con
  *   `SCHEMA_VERSION_UNSUPPORTED` y mensaje claro: el workflow fue escrito
  *   contra un schema más nuevo que el del motor actual.
  * - Si `workflow.schemaVersion < targetVersion`, busca migradores en cadena
  *   (ej: 1→2, 2→3). Si falta algún migrador intermedio, tira con mensaje
- *   específico sobre qué migración falta.
+ *   específico sobre qué migración falta. Trackea las keys aplicadas.
  *
  * El `registry` y el `targetVersion` se pasan explícitamente. El `targetVersion`
  * default es `CURRENT_SCHEMA_VERSION` (1) si no se especifica.
@@ -99,16 +115,16 @@ export type MigratorRegistry = Map<string, Migrator>;
  * @example
  *   const registry = new Map();
  *   registry.set("1->2", (wf) => ({ ...wf, schemaVersion: 2, /* renames *\/ }));
- *   const migrated = loadWorkflow(oldWorkflow, registry, 2);
+ *   const { workflow, appliedMigrations } = loadWorkflow(oldWorkflow, registry, 2);
  */
 export function loadWorkflow(
   workflow: WorkflowDefinition,
   registry: MigratorRegistry,
   targetVersion: number = CURRENT_SCHEMA_VERSION,
-): WorkflowDefinition {
+): LoadWorkflowResult {
   // Caso base: ya está en la versión del motor.
   if (workflow.schemaVersion === targetVersion) {
-    return workflow;
+    return { workflow, appliedMigrations: [] };
   }
 
   // Workflow escrito contra schema más nuevo que el del motor.
@@ -125,6 +141,7 @@ export function loadWorkflow(
   }
 
   // workflow.schemaVersion < targetVersion. Aplicar migradores en cadena.
+  const appliedMigrations: string[] = [];
   let current: WorkflowDefinition = workflow;
   let currentVersion = current.schemaVersion;
 
@@ -144,7 +161,8 @@ export function loadWorkflow(
     // Aplicar el migrador. Si tira, no se aplica nada (atomicidad de función pura).
     current = migrator(current);
     currentVersion = current.schemaVersion;
+    appliedMigrations.push(key);
   }
 
-  return current;
+  return { workflow: current, appliedMigrations };
 }

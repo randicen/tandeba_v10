@@ -1,19 +1,22 @@
 /**
- * Worgena — ClauseReviewerSpecialist (D2b.1).
+ * Worgena — ClauseReviewerSpecialist (D2b.1 + D2b.2).
  *
- * Fuente de verdad: `AGENT_D2B_1_SPEC.md` §2.1 goal 3, §5.3.
+ * Fuente de verdad:
+ * - D2b.1: `AGENT_D2B_1_SPEC.md` §2.1 goal 3, §5.3.
+ * - D2b.2: `AGENT_D2B_2_SPEC.md` §5.6.
  *
  * Specialist de tier robusto. Revisa cláusulas en busca de abusividad.
  *
- * System prompt (D2b.1): menciona principios genéricos de revisión. Los
- * principios jurídicos colombianos específicos (ley 1429, estatuto
- * consumidor, etc.) entran en D2b.2 con skills v1 de D2c. Ver spec §3.16.
+ * **D2b.2 cambios**: agentCard + lifecycle + agentVersion desde card
+ * + transición de lifecycle en execute(). Sin cambios al contrato.
+ *
+ * System prompt (D2b.2): sigue siendo genérico, menciona principios
+ * generales de revisión contractual. Los principios jurídicos colombianos
+ * específicos (ley 1429, estatuto consumidor, etc.) entran en D2c
+ * (skills v1). Ver `AGENT_ROADMAP.md` §5.14.
  *
  * Input: lista de cláusulas (array de objetos).
  * Salida: array de análisis por cláusula `{ clauseId, risk, reason }`.
- *
- * Backward-compat: el system prompt del nodo se REEMPLAZA. Si el nodo
- * NO tiene `assignedSpecialist`, el comportamiento es D2a.4.
  */
 
 import type { LLMNode } from "../workflow-engine/dsl/types.js";
@@ -25,15 +28,17 @@ import type {
 } from "../workflow-engine/executor/types.js";
 import { toNodeRuntimeError } from "../workflow-engine/executor/errors.js";
 import { resolveStateRef } from "../workflow-engine/executor/state.js";
-import { SPECIALIST_AGENT_VERSION, type Specialist, type SpecialistExecuteParams } from "./specialist.js";
+import type { Specialist, SpecialistExecuteParams } from "./specialist.js";
 import type { ModelRef } from "./tier-resolver.js";
+import { Lifecycle } from "./lifecycle.js";
+import { CLAUSE_REVIEWER_AGENT_CARD } from "./agent-cards/index.js";
 
 // ============================================================
 // ClauseReviewerSpecialist
 // ============================================================
 
 /**
- * Specialist de revisión de cláusulas. Tier robusto (m3-thinking mock).
+ * Specialist de revisión de cláusulas. Tier robusto (Claude 3.5 Sonnet).
  *
  * System prompt: "Sos un revisor de cláusulas contractuales. Recibís una
  *  lista de cláusulas y devolvés, para cada una, su nivel de riesgo
@@ -47,18 +52,21 @@ import type { ModelRef } from "./tier-resolver.js";
  */
 export class ClauseReviewerSpecialist implements Specialist {
   public readonly agentId = "clause_reviewer_specialist_v1";
-  public readonly capabilities: readonly string[] = [
-    "clause_review",
-    "contract_analysis",
-    "risk_classification",
-  ];
+  public readonly agentVersion: string = CLAUSE_REVIEWER_AGENT_CARD.version;
+  public readonly agentCard = CLAUSE_REVIEWER_AGENT_CARD;
+  public readonly capabilities: readonly string[] = CLAUSE_REVIEWER_AGENT_CARD.skills.map((s) => s.id);
   public readonly preferredModel: ModelRef = "robusto";
-  public readonly agentVersion = SPECIALIST_AGENT_VERSION;
+  public readonly lifecycle: Lifecycle;
 
-  constructor(private readonly invoker: LLMInvoker) {}
+  constructor(private readonly invoker: LLMInvoker) {
+    this.lifecycle = new Lifecycle();
+    this.lifecycle.transition("idle", "registered");
+  }
 
   async execute(params: SpecialistExecuteParams): Promise<NodeExecutionOutcome> {
     const { node, state, signal } = params;
+
+    this.lifecycle.transition("busy", `node ${node.id} starting`);
 
     const systemPrompt = this.buildSystemPrompt();
     const userInput = resolveStateRef(state, node.input.from, node.input.default);
@@ -78,8 +86,9 @@ export class ClauseReviewerSpecialist implements Specialist {
 
       this.validateOutputShape(result.output);
 
-      // Confidence gating también aplica (no es específico de intake).
       const gating = this.evaluateConfidence(node, result.output);
+
+      this.lifecycle.transition("done", `node ${node.id} completed`);
 
       return {
         status: "completed",
@@ -94,6 +103,7 @@ export class ClauseReviewerSpecialist implements Specialist {
       } satisfies NodeExecutionSuccess;
     } catch (e) {
       const err = toNodeRuntimeError(e);
+      this.lifecycle.transition("archived", `error: ${err.message}`);
       return {
         status: "failed",
         code: err.code,
