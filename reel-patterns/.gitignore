@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Screenshots generadas por scripts/shot.mjs — son artefactos
+# regenerables, no parte del código.
+scripts/shots/
