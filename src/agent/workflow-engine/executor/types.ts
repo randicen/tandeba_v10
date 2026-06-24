@@ -108,6 +108,26 @@ export interface HITLHandler {
    * via `immediateResponse` y el motor la procesa sin pausar.
    */
   initiate(params: HITLInitiateParams): Promise<HITLInitiateResult>;
+
+  /**
+   * D3.1: notifica al handler que una task `paused_hitl` fue recuperada
+   * del `TaskStore` tras un restart del server. El handler decide qué
+   * hacer (reenviar notificación al approver, marcarla como expirada,
+   * ignorar si el approver ya respondió, etc.).
+   *
+   * Si el requestId es `"synthetic-from-restart"`, significa que la task
+   * estaba en `running` al momento del crash y fue re-marcada como
+   * `paused_hitl` sintéticamente (no había un handler externo esperando).
+   *
+   * **Opcional**. Si no se implementa, el motor no notifica. Backward-compat:
+   * los `MockHITLHandler` de tests D2a.4 no lo implementan.
+   *
+   * El motor captura errores de este método para que un handler que lance
+   * no rompa el recovery del resto de las tasks.
+   *
+   * Spec: `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` §2.8, §3.4.
+   */
+  onResumeFromRestart?(taskId: string, pending: import("../dsl/types.js").PendingHITLDecision): void;
 }
 
 export interface HITLInitiateParams {
@@ -289,6 +309,20 @@ export interface ExecutorConfig {
    * startTask porque no hay dónde rutear. La validación es eager).
    */
   readonly specialistRegistry?: SpecialistRegistry;
+  /**
+   * D3.1: opt-in para persistencia de tasks. Solo tiene efecto si
+   * además se pasa un `TaskStore` al constructor del `WorkflowExecutor`.
+   * Si es `true`, el motor persiste la task en cada checkpoint
+   * (paused_hitl, completed, failed, cancelled).
+   * Si es `false` o no hay `TaskStore`, comportamiento legacy D2a
+   * (en memoria, se pierde en restart).
+   *
+   * Default: `false` (conservador — no cambia comportamiento de
+   * tests existentes que no esperan writes a DB).
+   *
+   * Spec: `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` §3.3.
+   */
+  readonly enablePersistence?: boolean;
 }
 
 export interface ExecutorLogger {

@@ -94,6 +94,13 @@ import type {
   WorkflowFunction,
   WorkflowState,
 } from "./types.js";
+import type { TaskStore } from "../persistence/task-store.js";
+import type { AuthProvider } from "../persistence/auth-provider.js";
+import type {
+  WorkflowAudit,
+  WorkflowAuditEvent,
+  WorkflowAuditEventType,
+} from "../persistence/workflow-audit.js";
 import Ajv from "ajv";
 
 // ============================================================
@@ -130,13 +137,348 @@ export class WorkflowExecutor {
   private readonly circuitBreaker: CircuitBreaker;
   private readonly migrators: MigratorRegistry;
   private readonly schemaVersion: number;
+  /**
+   * D3.1: TaskStore inyectable. Si está presente y `enablePersistence=true`,
+   * el motor persiste la task en cada checkpoint (paused, completed, etc.).
+   * Si está ausente, comportamiento legacy D2a (en memoria, se pierde en restart).
+   *
+   * Spec: `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` §3.2.
+   */
+  private readonly taskStore?: TaskStore;
+  /**
+   * D3.1: flag de opt-in para persistencia. Default `false` para no
+   * romper tests existentes que no esperan writes a DB.
+   */
+  private readonly persistenceEnabled: boolean;
+  /**
+   * D3.2: lista de `tenantId`s a recuperar al startup. Si el caller
+   * quiere persistencia, además del flag debe pasar esta lista.
+   * Default: `['default']` (modo single-tenant legacy).
+   *
+   * En D3.3+ con auth, el caller pasa la lista de tenants que el
+   * usuario autenticado puede ver (o todos, si es admin).
+   */
+  private readonly recoveryTenantIds: readonly string[];
+  /**
+   * D3.3: provee el `tenantId` del request al motor. Si no se inyecta,
+   * default a `StaticTenantProvider('default')` (single-tenant legacy).
+   */
+  private readonly authProvider: AuthProvider;
+  /**
+   * D3.3: audit del workflow engine. Si no se inyecta, el motor
+   * corre sin audit (los eventos no se registran).
+   */
+  private readonly audit?: WorkflowAudit;
 
-  constructor(config: ExecutorConfig) {
+  constructor(
+    config: ExecutorConfig,
+    taskStore?: TaskStore,
+    recoveryTenantIds?: readonly string[],
+    authProvider?: AuthProvider,
+    audit?: WorkflowAudit,
+  ) {
     this.config = config;
     this.log = config.logger;
     this.circuitBreaker = config.circuitBreaker ?? new NoopCircuitBreaker();
     this.migrators = config.migrators ?? new Map();
     this.schemaVersion = config.schemaVersion ?? 1;
+    this.taskStore = taskStore;
+    this.audit = audit;
+    // D3.3: default a StaticTenantProvider si no se inyecta uno. Cero
+    // cambios al interface público backward-compat.
+    this.authProvider = authProvider ?? { getTenantId: () => "default" };
+    // enablePersistence solo tiene efecto si hay taskStore.
+    this.persistenceEnabled =
+      taskStore !== undefined && config.enablePersistence === true;
+    this.recoveryTenantIds = recoveryTenantIds ?? ["default"];
+
+    // D3.3: orden SWEEP → RECOVERY (corregido durante testeo de D3.3 2026-06-13).
+    //
+    // Decisión original en spec §3.7 era "recovery → sweep". Era errónea: el
+    // sweeper filtra por `status='running'`, pero el recovery muta cualquier
+    // `running` a `paused_hitl` antes de que el sweeper pueda verla. Resultado:
+    // el sweeper nunca encuentra zombies porque el recovery las "esconde"
+    // primero.
+    //
+    // Orden correcto: sweeper corre PRIMERO (barre las running zombies
+    // dejándolas en `paused_error`), después recovery carga lo que quedó
+    // (pending + paused_hitl + paused_error). Las `paused_error` quedan en
+    // memoria hasta que el caller (D3.4+ server.ts) decida qué hacer.
+    //
+    // Auditoría: la decisión original fue revertida en este turno tras
+    // verificar empíricamente con tests B7-B13.
+    if (this.persistenceEnabled && this.taskStore) {
+      if (this.audit) {
+        const swept = this.sweepStaleTasks(30 * 60 * 1000);
+        if (swept > 0) {
+          this.log?.info("zombie tasks swept at startup", { count: swept });
+        }
+      }
+      this.recoverActiveTasks(this.taskStore, this.recoveryTenantIds);
+    }
+  }
+
+  /**
+   * D3.1: recovery de tasks no terminales desde el TaskStore.
+   * Llamado en el constructor si hay persistencia habilitada.
+   *
+   * D3.2: recibe la lista de tenants a recuperar. Itera por tenant
+   * (en lugar de cargar todo y filtrar en memoria) para que el
+   * enforcement de `TaskStore.loadActive(tenantId)` se respete.
+   *
+   * Spec: `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` §2.3, §6.2 +
+   *       `AGENT_D3_2_MULTI_TENANT_SPEC.md` §2.7.
+   */
+  private recoverActiveTasks(
+    store: TaskStore,
+    tenantIds: readonly string[],
+  ): void {
+    for (const tenantId of tenantIds) {
+      const active = store.loadActive(tenantId);
+      for (const task of active) {
+        // Si la task estaba 'running' al momento del crash, la re-hidratamos
+        // como 'paused_hitl' con un synthetic pendingDecision. El caller
+        // (D3.3 sweeper) decide qué hacer.
+        if (task.status === "running") {
+          task.status = "paused_hitl";
+          task.pendingDecision = {
+            nodeId: task.currentNode,
+            requestId: "synthetic-from-restart",
+            approvers: [],
+            question: "Task recuperada tras restart del server",
+            context: {
+              reason: "Server restart while task was running",
+              recoveredFromStatus: "running",
+              originalUpdatedAt: task.updatedAt,
+            },
+            startedAt: new Date().toISOString(),
+          };
+          task.updatedAt = new Date().toISOString();
+          this.log?.warn(
+            "Task re-hydrated from 'running' to 'paused_hitl' (synthetic)",
+            { taskId: task.taskId, tenantId, currentNode: task.currentNode },
+          );
+          // FIX I-1 (audit D3.1 2026-06-13): persistir la mutación de vuelta
+          // al store. Sin esto, el store queda mintiendo (`status='running'`)
+          // mientras el motor tiene la task en `paused_hitl`. Si el server
+          // crashea otra vez antes de que la task cambie de estado, el
+          // siguiente startup re-aplicaría la misma mutación.
+          // D3.2: pasamos `task.tenantId`. Si está vacío (FIX W-2 audit
+          // D3.2), lo logueamos como error pero skipeamos el save para
+          // no crashear el recovery de las otras tasks.
+          if (this.taskStore) {
+            if (task.tenantId) {
+              this.taskStore.save(task, task.tenantId);
+            } else {
+              this.log?.error(
+                "task recovered without tenantId, skipping persist (D3.2 W-2 fix)",
+                { taskId: task.taskId, currentNode: task.currentNode },
+              );
+            }
+          }
+        }
+        this.tasks.set(task.taskId, task);
+        this.idempotencyCaches.set(task.taskId, new Map());
+        // D3.3: audit del recovery. Distingue "fresh load" (task ya
+        // estaba paused_hitl) de "re-hidratación sintética" (task
+        // estaba running y la marcamos paused_hitl). El caller que
+        // analice el log del server puede distinguir ambos.
+        if (this.audit) {
+          this.recordAudit({
+            tenantId,
+            taskId: task.taskId,
+            eventType: "recovery",
+            payload: {
+              rehydratedFromRunning: task.pendingDecision?.requestId === "synthetic-from-restart",
+              status: task.status,
+              currentNode: task.currentNode,
+            },
+            createdAt: Date.now(),
+          });
+        }
+        this.log?.info("task re-hydrated from store", {
+          taskId: task.taskId,
+          tenantId,
+          status: task.status,
+          workflowId: task.workflowId,
+        });
+        // Notificar al handler si está configurado. El método es opcional
+        // y el motor captura errores para que un handler que lance no rompa
+        // el recovery del resto de las tasks.
+        const handler = this.config.hitlHandler as HITLHandler | undefined;
+        if (
+          task.status === "paused_hitl" &&
+          task.pendingDecision &&
+          typeof handler.onResumeFromRestart === "function"
+        ) {
+          try {
+            handler.onResumeFromRestart(task.taskId, task.pendingDecision);
+          } catch (e) {
+            this.log?.error("onResumeFromRestart handler threw", {
+              taskId: task.taskId,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * D3.3: barre tasks en `running` con `last_heartbeat_at` viejo.
+   * Las marca como `paused_error` con `error.code = "ZOMBIE_SWEEP"`.
+   * Idempotente. Retorna el número de tasks barreadas.
+   *
+   * Si `audit` está configurado, registra un evento `zombie_sweep`
+   * por cada task barriada.
+   *
+   * El sweeper se llama automáticamente al startup (si `audit` está
+   * configurado), pero el caller también puede llamarlo manualmente
+   * (e.g., desde un cron en D3.4+).
+   *
+   * Spec: `AGENT_D3_3_AUTH_SWEEPER_AUDIT_SPEC.md` §3.5.
+   */
+  sweepStaleTasks(maxAgeMs: number = 30 * 60 * 1000): number {
+    if (!this.persistenceEnabled || !this.taskStore) {
+      return 0;
+    }
+    let swept = 0;
+    for (const tenantId of this.recoveryTenantIds) {
+      const zombies = this.taskStore.findStaleZombieTasks(tenantId, maxAgeMs);
+      for (const task of zombies) {
+        if (task.status !== "running") continue; // idempotente
+        task.status = "paused_error";
+        task.error = {
+          code: "INTERNAL_ERROR",
+          message:
+            `Task marked as zombie by sweeper (maxAgeMs=${maxAgeMs}). ` +
+            `The motor was likely interrupted (crash, kill, OOM).`,
+        };
+        task.updatedAt = new Date().toISOString();
+        try {
+          this.taskStore.save(task, tenantId);
+        } catch (e) {
+          this.log?.error("sweeper save failed", {
+            taskId: task.taskId,
+            tenantId,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          continue;
+        }
+        // D3.3: audit
+        if (this.audit) {
+          this.recordAudit({
+            tenantId,
+            taskId: task.taskId,
+            eventType: "zombie_sweep",
+            payload: { maxAgeMs, lastHeartbeatAt: null },
+            createdAt: Date.now(),
+          });
+        }
+        swept++;
+        this.log?.warn("task swept as zombie", {
+          taskId: task.taskId,
+          tenantId,
+          currentNode: task.currentNode,
+        });
+      }
+    }
+    return swept;
+  }
+
+  /**
+   * D3.3: helper privado para registrar un evento en el audit.
+   * Si el audit no está configurado, no hace nada. Si `record()` lanza,
+   * el motor loguea con `error()` y sigue (el audit es secundario).
+   */
+  private recordAudit(event: WorkflowAuditEvent): void {
+    if (!this.audit) return;
+    try {
+      this.audit.record(event);
+    } catch (e) {
+      this.log?.error("audit.record() threw", {
+        taskId: event.taskId,
+        eventType: event.eventType,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /**
+   * D3.3: resuelve el `tenantId` para una nueva task. La interface
+   * `AuthProvider.getTenantId` es opcionalmente async (`string |
+   * Promise<string>`); en `startTask` (síncrono) solo aceptamos
+   * providers sync. Si el provider es async, lo logueamos y caemos
+   * al default. El caller (D3.4+ server.ts) debería preferir pasar
+   * `options.tenantId` (string concreto extraído del JWT) en lugar
+   * de depender de un provider async.
+   */
+  private resolveTenantId(): string {
+    if (!this.authProvider) return "default";
+    const result = this.authProvider.getTenantId();
+    if (typeof result === "string") return result;
+    // Provider async: loguear y fallback a "default" para no romper
+    // la semántica síncrona de startTask. Esto es un trade-off
+    // documentado: startTask NO espera Promises. Si el caller
+    // necesita el tenant resuelto, que pase options.tenantId.
+    this.log?.warn(
+      "authProvider.getTenantId() returned a Promise. " +
+        "startTask() requires a sync string. " +
+        "Pre-pend `await` and pass `options.tenantId` from the caller. " +
+        "Falling back to 'default' for now.",
+      { provider: this.authProvider.constructor?.name ?? "anonymous" },
+    );
+    return "default";
+  }
+
+  /**
+   * D3.1: persiste la task si la persistencia está habilitada.
+   * Helper central para que todas las transiciones de estado usen
+   * el mismo código. Si la persistencia está deshabilitada, no hace nada.
+   * Si la persistencia lanza, NO captura — se propaga al caller (atomicidad).
+   *
+   * D3.2: pasa `task.tenantId` al store. Si está vacío, throw
+   * `ExecutorError` con `INTERNAL_ERROR` antes de tocar el store.
+   *
+   * Spec: `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` §2.2, §6.4 +
+   *       `AGENT_D3_2_MULTI_TENANT_SPEC.md` §2.2.
+   */
+  private persistCheckpoint(
+    task: Task,
+    trigger: "start" | "pause_hitl" | "resume" | "complete" | "fail" | "cancel",
+  ): void {
+    if (!this.persistenceEnabled || !this.taskStore) return;
+    // D3.2 strict: tenantId es OBLIGATORIO en el store.
+    if (!task.tenantId) {
+      throw new ExecutorError(
+        `Task ${task.taskId} sin tenantId al persistir (trigger=${trigger}). ` +
+          `El motor siempre debe setear tenantId al crear la task (startTask/replayTask). ` +
+          `Esto es un bug del caller, no del usuario.`,
+        "INTERNAL_BUG",
+        { taskId: task.taskId, trigger },
+      );
+    }
+    this.taskStore.save(task, task.tenantId);
+    // D3.3: touch() después del save para actualizar last_heartbeat_at.
+    // Idempotente cross-tenant. Si save() eliminó la task (terminal),
+    // touch() es no-op.
+    this.taskStore.touch(task.taskId, task.tenantId);
+    this.log?.debug("task persisted", {
+      taskId: task.taskId,
+      tenantId: task.tenantId,
+      status: task.status,
+      trigger,
+    });
+    // D3.3: audit del evento.
+    if (this.audit) {
+      this.recordAudit({
+        tenantId: task.tenantId,
+        taskId: task.taskId,
+        eventType: trigger as WorkflowAuditEventType,
+        payload: { status: task.status, currentNode: task.currentNode },
+        createdAt: Date.now(),
+      });
+    }
   }
 
   // ─── Task lifecycle ─────────────────────────────────────
@@ -161,7 +503,11 @@ export class WorkflowExecutor {
    *    actual (no el del workflow original en DB si fue migrado — D3
    *    introduce DB; hoy se trabaja con el workflow en memoria).
    */
-  startTask(workflow: WorkflowDefinition, input: unknown): Task {
+  startTask(
+    workflow: WorkflowDefinition,
+    input: unknown,
+    options?: { tenantId?: string },
+  ): Task {
     this.assertWorkflowValid(workflow);
 
     // Validación completa (schema + cross-validation). Compilada en ajv; ~5ms.
@@ -254,7 +600,12 @@ export class WorkflowExecutor {
       nodeResults: {},
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      tenantId: "default", // D3 introduce tenant_id real
+      // D3.3: resolver tenantId.
+      // Prioridad: options.tenantId (override explícito) > authProvider (request-scoped) > "default" (dev).
+      // El options.tenantId permite a callers (D3.4+ server.ts) inyectar el
+      // tenant extraído del JWT antes de invocar startTask, sin que el motor
+      // tenga que conocer el JWT.
+      tenantId: options?.tenantId ?? this.resolveTenantId(),
       input,
       ...(appliedMigrations.length > 0 && { migratedWorkflow: effectiveWorkflow }),
       ...(appliedMigrations.length > 0 && { appliedMigrations }),
@@ -264,6 +615,8 @@ export class WorkflowExecutor {
     this.taskWorkflows.set(taskId, effectiveWorkflow);
     this.idempotencyCaches.set(taskId, new Map());
     this.log?.info(`task created`, { taskId, workflowId: effectiveWorkflow.id });
+    // D3.1: persistir la task recién creada. Falla loud si el store lanza.
+    this.persistCheckpoint(task, "start");
     return task;
   }
 
@@ -316,6 +669,8 @@ export class WorkflowExecutor {
     task.startedAt = task.startedAt ?? new Date().toISOString();
     task.updatedAt = new Date().toISOString();
     this.log?.info(`task started`, { taskId, entryNode: task.currentNode });
+    // D3.1: persistir transición a running.
+    this.persistCheckpoint(task, "resume");
 
     // AbortController para la duración del run. Si cancelan la task, abortamos
     // el signal; los invokers que lo respeten cancelan su trabajo en curso.
@@ -337,6 +692,8 @@ export class WorkflowExecutor {
         code: "INTERNAL_ERROR",
         message: e instanceof Error ? e.message : String(e),
       };
+      // D3.1: persistir task crasheada como failed.
+      this.persistCheckpoint(task, "fail");
     }
 
     task.completedAt = new Date().toISOString();
@@ -367,6 +724,8 @@ export class WorkflowExecutor {
     // esperando HITL y fue cancelada. Útil para audit ("cancelada tras 3 días").
     task.updatedAt = new Date().toISOString();
     this.log?.info(`task cancelled`, { taskId, wasPausedHITL: wasPaused });
+    // D3.1: persistir cancelación.
+    this.persistCheckpoint(task, "cancel");
   }
 
   /**
@@ -413,12 +772,19 @@ export class WorkflowExecutor {
    * (ej: después de archivar el audit log a storage externo en D3+).
    */
   purgeTask(taskId: string): void {
+    // D3.2: leer tenantId ANTES de borrar del Map (lo necesitamos para
+    // el store.delete). Si la task no existe en memoria, no llamamos al
+    // store — el motor no la conocía, no es su problema.
+    const task = this.tasks.get(taskId);
     const existed = this.tasks.delete(taskId);
     this.taskWorkflows.delete(taskId);
     this.cancelledTasks.delete(taskId);
     this.idempotencyCaches.delete(taskId);
+    if (existed && this.persistenceEnabled && this.taskStore && task?.tenantId) {
+      this.taskStore.delete(taskId, task.tenantId);
+    }
     if (existed) {
-      this.log?.debug(`task purged completely`, { taskId });
+      this.log?.debug(`task purged completely`, { taskId, tenantId: task?.tenantId });
     }
   }
 
@@ -641,6 +1007,11 @@ export class WorkflowExecutor {
       const nextId = this.findNextNodeViaEdges(workflow, nodeId, this.getState(task));
       if (nextId === null) {
         task.status = "completed";
+        // D3.1: persistir terminación (sin terminal; §2.1 — completed se purga).
+        // Como el InMemoryTaskStore y el SqliteTaskStore ambos purgan
+        // terminales en save, esta llamada termina eliminando la task
+        // del store. Si la persistencia está deshabilitada, no hace nada.
+        this.persistCheckpoint(task, "complete");
         return this.makeResult(task);
       }
       task.currentNode = nextId;
@@ -653,6 +1024,7 @@ export class WorkflowExecutor {
         const nextId = this.findNextNodeViaEdges(workflow, nodeId, this.getState(task));
         if (nextId === null) {
           task.status = "completed";
+          this.persistCheckpoint(task, "complete");
           return this.makeResult(task);
         }
         task.currentNode = nextId;
@@ -675,6 +1047,8 @@ export class WorkflowExecutor {
         code: "INTERNAL_ERROR",
         message: e instanceof Error ? e.message : String(e),
       };
+      // D3.1: persistir task crasheada como failed.
+      this.persistCheckpoint(task, "fail");
     }
 
     task.completedAt = new Date().toISOString();
@@ -738,6 +1112,8 @@ export class WorkflowExecutor {
       // Restaurar status='running' ANTES de aplicar la respuesta (ella
       // asume que la task está running).
       task.status = "running";
+      // D3.1: persistir el "resumed" (transition paused_hitl → running).
+      this.persistCheckpoint(task, "resume");
       await this.applyHITLResponse(task, node, outcome.immediateResponse);
       // Si la respuesta hizo que la task sea terminal, retornar.
       // runLoop chequea el status al volver, pero si la task es terminal
@@ -745,6 +1121,17 @@ export class WorkflowExecutor {
       // ya cerrado.
       const terminalStatus = (task as { status: TaskStatus }).status;
       if (terminalStatus === "failed" || terminalStatus === "completed" || terminalStatus === "cancelled") {
+        // D3.1: persistir terminación (failed, completed, cancelled).
+        // El store purga las terminales (ver InMemoryTaskStore.save y
+        // la decisión §2.1). Si la persistencia está deshabilitada,
+        // no hace nada.
+        if (terminalStatus === "completed") {
+          this.persistCheckpoint(task, "complete");
+        } else if (terminalStatus === "failed") {
+          this.persistCheckpoint(task, "fail");
+        } else {
+          this.persistCheckpoint(task, "cancel");
+        }
         return;
       }
       return;
@@ -769,6 +1156,10 @@ export class WorkflowExecutor {
       requestId: outcome.requestId,
       approvers: node.approvers,
     });
+    // D3.1: persistir la pausa. Esta es la operación más importante
+    // del sprint: si el server crashea después de esta línea, la task
+    // sobrevive y se re-hidrata al startup.
+    this.persistCheckpoint(task, "pause_hitl");
   }
 
   /**
@@ -995,6 +1386,8 @@ export class WorkflowExecutor {
       // Check cancellation en cada iteración (cooperative).
       if (this.cancelledTasks.has(task.taskId) || signal.aborted) {
         task.status = "cancelled";
+        // D3.1: persistir cancelación detectada en el loop.
+        this.persistCheckpoint(task, "cancel");
         return;
       }
 
@@ -1052,6 +1445,8 @@ export class WorkflowExecutor {
         const nextId = this.findNextNodeViaEdges(workflow, node.id, this.getState(task));
         if (nextId === null) {
           task.status = "completed";
+          // D3.1: persistir terminación (completed se purga del store).
+          this.persistCheckpoint(task, "complete");
           return;
         }
         task.currentNode = nextId;
@@ -1104,6 +1499,8 @@ export class WorkflowExecutor {
           const nextId = this.findNextNodeViaEdges(workflow, node.id, state);
           if (nextId === null) {
             task.status = "completed";
+            // D3.1: persistir terminación.
+            this.persistCheckpoint(task, "complete");
             return;
           }
           task.currentNode = nextId;
@@ -1184,6 +1581,8 @@ export class WorkflowExecutor {
       const nextId = this.findNextNodeViaEdges(workflow, node.id, state);
       if (nextId === null) {
         task.status = "completed";
+        // D3.1: persistir terminación del happy path.
+        this.persistCheckpoint(task, "complete");
         return;
       }
       task.currentNode = nextId;
@@ -1604,6 +2003,8 @@ export class WorkflowExecutor {
       code: error.code,
       failedNode: error.failedNode,
     });
+    // D3.1: persistir terminación con error.
+    this.persistCheckpoint(task, "fail");
   }
 
   private resolveErrorAction(

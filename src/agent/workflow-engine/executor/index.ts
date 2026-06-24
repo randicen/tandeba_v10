@@ -54,6 +54,31 @@ export { ExecutorError, toNodeRuntimeError, isRetriableByDefault } from "./error
 export { NoopCircuitBreaker } from "./circuit-breaker.js";
 export type { CircuitBreaker } from "./circuit-breaker.js";
 
+// D3.1: re-export del TaskStore para que los callers del motor puedan
+// tipar su storage sin importar de `persistence/` directamente.
+export type { TaskStore } from "../persistence/task-store.js";
+export {
+  InMemoryTaskStore,
+  SqliteTaskStore,
+  runPersistenceMigrations,
+  MissingTenantIdError,
+} from "../persistence/index.js";
+
+// D3.3: re-exports de AuthProvider, WorkflowAudit y sus implementaciones.
+// Centralizamos acá para que callers (D3.4+ server.ts) no tengan que
+// importar de `persistence/` directamente.
+export type { AuthProvider } from "../persistence/auth-provider.js";
+export { StaticTenantProvider } from "../persistence/auth-provider.js";
+export type {
+  WorkflowAudit,
+  WorkflowAuditEvent,
+  WorkflowAuditEventType,
+} from "../persistence/workflow-audit.js";
+export {
+  SqliteWorkflowAudit,
+  InMemoryWorkflowAudit,
+} from "../persistence/index.js";
+
 export type {
   LLMInvoker,
   LLMInvokeParams,
