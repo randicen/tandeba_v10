@@ -8,10 +8,12 @@
  * la response. OpenRouter devuelve el costo real facturado en `usage.cost`
  * para la mayoría de los modelos; cuando no, estimamos con este catálogo.
  *
- * **Defaults** (precios públicos de OpenRouter, redondeados, fecha 2026-06-12):
- * - `deepseek/deepseek-chat`     → $0.14 prompt / $0.28 completion por 1M tokens.
- * - `anthropic/claude-3.5-sonnet` → $3.00 prompt / $15.00 completion por 1M tokens.
- * - `qwen/qwen3-embedding-8b`     → $0.05 prompt / $0.00 completion por 1M tokens.
+ * **Defaults** (precios públicos de OpenRouter y OpenCode Zen, redondeados, fecha 2026-06-15):
+ * - `deepseek/deepseek-chat`     → $0.14 prompt / $0.28 completion por 1M tokens (OpenRouter).
+ * - `anthropic/claude-3.5-sonnet` → $3.00 prompt / $15.00 completion por 1M tokens (OpenRouter).
+ * - `qwen/qwen3-embedding-8b`     → $0.05 prompt / $0.00 completion por 1M tokens (OpenRouter).
+ * - `deepseek-v4-flash`           → $0.14 prompt / $0.28 completion por 1M tokens (OpenCode Zen, mismo precio que chat, mismo modelo).
+ * - `deepseek-v4-flash-free`      → $0.00 prompt / $0.00 completion por 1M tokens (OpenCode Zen, tier promocional temporal; datos pueden usarse para entrenar el modelo. Aceptable solo para ingesta de docs institucionales).
  *
  * El caller puede extender/sobrescribir vía `extend()` o `set()`. Esto
  * permite que D3+ meta precios por tenant o por firma sin tocar este
@@ -56,6 +58,8 @@ export const DEFAULT_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Obj
   "deepseek/deepseek-chat": { promptUsdPerM: 0.14, completionUsdPerM: 0.28, currency: "USD" },
   "anthropic/claude-3.5-sonnet": { promptUsdPerM: 3.00, completionUsdPerM: 15.00, currency: "USD" },
   "qwen/qwen3-embedding-8b": { promptUsdPerM: 0.05, completionUsdPerM: 0.00, currency: "USD" },
+  "deepseek-v4-flash": { promptUsdPerM: 0.14, completionUsdPerM: 0.28, currency: "USD" },
+  "deepseek-v4-flash-free": { promptUsdPerM: 0.00, completionUsdPerM: 0.00, currency: "USD" },
 });
 
 // ============================================================

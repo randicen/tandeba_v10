@@ -11,3 +11,22 @@ coverage/
 workspace/
 Secrets.txt
 recursos/
+
+# SQLite WAL / shared memory (la DB principal worgena.db sí está tracked)
+*.db-shm
+*.db-wal
+
+# Runtime / research material (clones de otros repos, scratch space, etc.)
+.tmp/
+.claude/sessions/
+
+# Test output captures (stale logs, regenerables)
+test_d3_3_output.txt
+test_output_capture*.txt
+
+# Windows shortcuts
+*.lnk
+
+# Memoria del proyecto — ubicación canónica es ~/.config/opencode/memory/worgena/
+# Esta copia en el workspace es duplicado de runtime y no debe commitearse.
+memory/

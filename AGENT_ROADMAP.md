@@ -167,10 +167,12 @@ El producto es multi-modelo desde D2, con tiers diferenciados por tipo de nodo:
 | Tier | Modelos | Uso |
 |---|---|---|
 | Tier 3 (liviano) | DeepSeek V4 Flash, Gemini Flash, Haiku, GPT-4o-mini | Intake, clasificación, extracción, verificación simple |
-| Tier 2 (especializado) | Embeddings (BGE-M3), visión, código (Codestral, Qwen-Coder) | Embeddings, análisis de imágenes, code-specific |
+| Tier 2 (especializado) | Embeddings (BGE-M3, local en Nitro), visión, código (Codestral, Qwen-Coder) | Embeddings, análisis de imágenes, code-specific |
 | Tier 1 (robusto) | MiniMax M3 Thinking, Opus, GPT-5, Gemini Thinking | Razonamiento jurídico, generación crítica |
 
 Worgena hoy usa Tier 1 y Tier 3 directamente. Tier 2 se introduce cuando lleguen los embeddings reales (D4-D5).
+
+**Decisión de hosting de embeddings** (2026-06-15, ver `HANDOFF.md`): Tier 2 corre BGE-M3 **local en el hardware del founder** (Acer Nitro V15, 16GB RAM, 4GB VRAM, ONNX fp16, ~50 chunks/seg). Razones: 4GB VRAM alcanza justo para fp16 (~1.1GB modelo), costo $0, latencia aceptable para ingesta batch; self-host GPU cloud o HF Inference son forward-compat si el volumen crece. La interface `OpenRouterClient.embeddings()` queda como abstracción compatible.
 
 **Patrones de fallback**:
 
@@ -516,6 +518,20 @@ Empaquetar las topic-based policies (D1) como skills con SKILL.md, catálogo ver
 
 **Subtotal D2c: ~1.5h**
 
+### 6.4. Dimensión 3 — Multi-tenancy, auth, auditoría
+
+**Status**: ✅ **D3 cerrado completo** (3 sprints cortos: D3.1, D3.2, D3.3). Pendiente: **D3.4 + D3.5** (auth real de usuario, ver `AGENT_D3_4_5_DB_AUTH_SPEC.md`).
+
+| Sub-item | Sprint | Status | Qué |
+|---|---|---|---|
+| Storage cross-restart | D3.1 | ✅ Cerrado | `paused_tasks` table, `TaskStore` interface, recovery al startup. CRIT-1/MAYR-LEGAL cerrado. |
+| Multi-tenant enforcement | D3.2 | ✅ Cerrado | PK compuesto `(task_id, tenant_id)`, `MissingTenantIdError`, isolation tests. |
+| Auth stub + sweeper + audit | D3.3 | ✅ Cerrado | `AuthProvider` interface, sweeper con `last_heartbeat_at`, tabla `workflow_audit`. |
+| **Auth real Google OAuth** | **D3.4** | 📝 **Spec escrita** | Better Auth + Google + SQLite + Express + `DbAuthProvider` + middleware + security headers + rate limit. |
+| **Hardening (2FA + audit_auth + SECURITY.md)** | **D3.5** | 📝 **Spec escrita** | TOTP plugin de Better Auth, `audit_auth` table, `SECURITY.md` para enterprise. |
+
+**Decisión D3.4-D3.5 (2026-06-14)**: auth propio con Better Auth (no Clerk, no WorkOS, no Supabase Auth). Razón: ahorrativo desde el día 1, datos del user en TU DB (compliance habeas data Colombia sin sub-procesadores), robusto para un cliente enterprise chico, lock-in bajo (Better Auth es librería, no servicio). Spec en `AGENT_D3_4_5_DB_AUTH_SPEC.md`. **2 sprints cortos (no 3)**: D3.4 = OAuth flow + middleware + tests (2-3 días), D3.5 = 2FA + audit + doc (1-2 días).
+
 ---
 
 ## 7. Decisiones que este documento invalida o actualiza
@@ -535,8 +551,8 @@ Documentos existentes que contienen referencias outdated a la arquitectura vieja
 
 ## 8. Open questions / decisiones pendientes
 
-1. **Multi-tenant auth model (D3)**: ¿Cómo se aíslan los datos? ¿Por `tenant_id` en cada query? ¿Por schema separado? Decisión post-D2.
-2. **Persistencia del motor (D2a)**: ¿SQLite (lo que ya hay) o Postgres desde D2a? SQLite es lo actual; Postgres da pgvector (útil para D4/D5) pero requiere migración. Recomendación: SQLite para D2a, evaluar Postgres en D4.
+1. **Persistencia del motor (D2a)**: ¿SQLite (lo que ya hay) o Postgres desde D2a? SQLite es lo actual; Postgres da pgvector (útil para D4/D5) pero requiere migración. Recomendación: SQLite para D2a, evaluar Postgres en D4.
+2. **Auth propio vs Clerk (D3.4-D3.5)**: ✅ Resuelto 2026-06-14 → auth propio con Better Auth. Ver `AGENT_D3_4_5_DB_AUTH_SPEC.md`.
 3. **UI de skills (D6)**: ¿Editor visual de workflows (drag-and-drop) o YAML editable con preview? Decisión cuando lleguemos a D6.
 4. **Versionado de skills al editar (D6)**: ¿Versionar workflows cuando el usuario los edita, o destructive replace? Impacta UX y storage.
 5. **Catálogo inicial de workflows predefinidos (D6)**: ¿Empezamos con 3 workflows de ejemplo (arrendamiento, NDA, demanda laboral) o dejamos que las firmas creen los suyos desde cero? Mi recomendación: 1 workflow predefinido de alto valor + creación libre.

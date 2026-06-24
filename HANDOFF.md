@@ -10,10 +10,45 @@
 
 ## Estado al cierre de esta sesión
 
-**Fecha**: 2026-06-12 (noche)
-**Sprint cerrado**: **AUDIT_D2_CLEANUP #2** — sprint de limpieza que cierra los 4 hallazgos pendientes del #1 que podía resolver como ingeniero (MAY-2, MAY-7, NIT-1, NIT-4). Los 2 re-clasificados a "no requieren fix" (eran juicios erróneos de mi auditoría original).
+**Fecha**: 2026-06-13 (mediodía)
+**Sprint cerrado**: **D3.2 — Multi-Tenant Schema + Enforcement en TaskStore** + **Audit post-sprint con fix crítico I-1**. Activa el `tenant_id` que D3.1 dejó como columna pero sin enforcement. Interface `TaskStore` ahora requiere `tenantId` estricto (`MissingTenantIdError` si undefined). Migración idempotente agrega columna a `sessions` y `spaces`. Recovery del motor ahora itera por lista de tenants configurable.
 
-- **Tests al cierre**: **230/230 pasan** (227 originales + 3 nuevos: 1 MAY-2, 2 MAY-7). Cero regresiones.
+**Audit post-D3.2** (en este turno) encontró un **bug crítico I-1** (no detectado en el sprint): el PK de `paused_tasks` era `task_id` global. Dos tenants con el mismo `taskId` colisionaban: el `INSERT OR REPLACE` pisa al primero, y el filtro por tenant en `load()` hacía que el tenant perdedor **perdiera acceso a SU PROPIA task** (data loss silenciosa cross-tenant). **Arreglado en este turno**: PK cambiado a compuesto `(task_id, tenant_id)`. Tanto `SqliteTaskStore` como `InMemoryTaskStore` (key compuesta `${tenantId}::${taskId}`). Test B15 actualizado para verificar la coexistencia.
+
+**Tests al cierre**: **291/291 tests pasan, 0 fallidos, 0 regresiones** (30 D3.2 + 39 D3.1 + 18 D2a.4 + 36 D2a.2.3 + 7 D2a.5 + 16 D2b.1 + 64 D2b.2 + 27 D2c + 54 executor). tsc limpio.
+
+---
+
+## Estado al cierre de esta sesión
+
+**Fecha**: 2026-06-13 (mañana)
+**Sprint cerrado**: **AUDIT_D2C_CLEANUP #1** — sprint de limpieza que cierra los 7 hallazgos accionables de `AUDIT_D2C_2026-06-13.md` (3 mayores + 4 menores). Los 3 nits quedan para cuando se toquen los archivos respectivos.
+
+- **Tests al cierre**: **259/259 pasan** (256 originales + 3 nuevos). Cero regresiones. tsc limpio.
+
+**Hallazgos arreglados (7)**:
+
+| ID | Severidad | Fix |
+|---|---|---|
+| **MAY-1** | 🟠 | Sync spec §5.2: `discover()` retorna `readonly SkillMatch[]` (con score + matchedOn), no `readonly Skill[]`. El tipo `SkillMatch` está en spec. |
+| **MAY-2** | 🟠 | Agregado `metadata?: { topic?: string; jurisdiction?: string }` a `LLMNode` en `src/agent/workflow-engine/dsl/types.ts`. Eliminado el cast feo `(node as LLMNode & { metadata?: ... })` en `clause-reviewer-specialist.ts:81-88`. Ahora es `node.metadata?.topic` directo. |
+| **MAY-3** | 🟠 | Sync spec §6.2: `discover()` se hace en cada `execute()`, NO pre-loop. La razón original era que el contexto del nodo puede cambiar entre nodos. El cost es O(N×K), despreciable (<1ms para 10 skills). Forward-compat con D3+ multi-tenant: índice invertido para O(1). |
+| **MIN-1** | 🟡 | Agregados 3 tests: `formatSkillsForPrompt` con `[]` retorna `""`, con registry vacío retorna `""`, con matches inyecta sección `# Skills cargadas`. |
+| **MIN-2** | 🟡 | Spec §4.4 documenta convención de keywords: lowercase, singular, sin `_`, sin puntuación interna. Justificación: matching estricto, sin stemming. |
+| **MIN-3** | 🟡 | Misma sección §4.4 cubre MIN-3. |
+| **MIN-4** | 🟡 | Test 23 (`loadFromDir: skills/ del proyecto carga juridica-colombia`) ahora chequea primero si existe el archivo y tira error claro si falta, en vez de fallar con "directorio no existe". |
+
+**Hallazgos NO arreglados** (3 nits, decisión: dejarlos):
+
+| ID | Razón |
+|---|---|
+| **NIT-1** | Doc: ya parcialmente cubierto por la actualización de §6.1. Skip el cambio explícito. |
+| **NIT-2** | Rename `userMessage` → `text`: no aporta valor real, el nombre es claro. Skip. |
+| **NIT-3** | Cabecera `clause-reviewer-specialist.ts`: podría actualizarse pero no hay un dev que la vaya a leer mañana. Skip. |
+
+**Decisiones de diseño registradas durante implementación** (audit §3, opciones A-D): se documentan en el spec §11 y se referencian desde el audit. No agregadas al spec en este sprint (deuda chica).
+
+**Sprint anterior**: **D2c — Skills v1** (2026-06-13 mañana). Spec `AGENT_D2C_SKILLS_V1_SPEC.md` v1.0, 3 archivos nuevos en `src/agent/skills/`, 1 skill real en `skills/juridica-colombia/`, integración con `ClauseReviewerSpecialist`, 24 tests nuevos. 256/256 tests pasando. Cero regresiones.
 - **Hallazgos arreglados en #2** (4): MAY-2 (sync doc `cleanup` con código), MAY-7 (factory se invoca 1 sola vez con `preferredModel`), NIT-1 (re-clasificado, no aplica), NIT-4 (re-clasificado, formato actual es mejor).
 - **Pendiente único** (forward-compat con D3): **CRIT-1/MAYR-LEGAL** — storage cross-restart para tasks `paused_hitl`. **Decisión del founder (2026-06-12 noche): opción B** — esperar a D3 (multi-tenant + DB) y meterlo ahí. 1 tabla `paused_tasks` es trabajo chico dentro del sprint D3, no redefine alcance. Razón: A es MVP-quick-fix pero hay que reescribir en D3; C es mal UX + riesgo legal. B es la única que escala y ya está en el roadmap.
 
@@ -27,7 +62,185 @@
 
 **Próximo sprint propuesto**: **D2c — Skills v1**. Roadmap §5.4, §5.14. Empaquetar las topic-based policies como skills con SKILL.md, principios jurídicos colombianos. Catálogo de tools se enchufa al `OpenRouterLLMInvoker` (forward-compat con CRIT-2 ya aplicado).
 
-**D1 cerrada**, **D2a cerrado**, **D2b cerrado**, **AUDIT_D2_CLEANUP cerrado** (en 2 sprints). Pendiente: D2c (skills v1), D3 (multi-tenant + DB), D4 (memoria), D5 (RAG), D6 (editor).
+**D1 cerrada**, **D2a cerrado**, **D2b cerrado**, **AUDIT_D2_CLEANUP cerrado** (en 2 sprints), **D2c cerrado** (skills v1), **AUDIT_D2C_CLEANUP #1 cerrado** (7 hallazgos arreglados), **D3.1 cerrado** (storage cross-restart), **D3.2 cerrado** (multi-tenant enforcement), **D3.3 cerrado** (auth + sweeper + audit). Pendiente: **D3.4 + D3.5** (auth real Google OAuth con Better Auth, ver `AGENT_D3_4_5_DB_AUTH_SPEC.md` v1.0, spec escrita 2026-06-14), D4 (memoria), D5 (RAG), D6 (editor).
+
+---
+
+## Sprint recién cerrado: D3.2 — Multi-Tenant Schema + Enforcement en TaskStore
+
+**Qué cubre**: segundo sprint de D3 (partido en 3 sprints cortos D3.1, D3.2, D3.3). Activa el `tenant_id` que D3.1 dejó como columna en `paused_tasks` pero NO enforzaba. D3.2 introduce el `MissingTenantIdError`, la interface `TaskStore` con `tenantId` OBLIGATORIO, y el enforcement real en `load/loadActive/delete` (cross-tenant retorna null, no leak).
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Componentes entregados**:
+
+| Archivo | Líneas | Qué hace |
+|---|---|---|
+| `AGENT_D3_2_MULTI_TENANT_SPEC.md` | 350+ | Spec v1.0: 14 secciones, decisiones §2.1-§2.10, schema de migración, interface strict. |
+| `src/agent/workflow-engine/persistence/errors.ts` | 25 | `MissingTenantIdError` con mensaje accionable (menciona D3.3 admin). |
+| `src/agent/workflow-engine/persistence/task-store.ts` | +20 | `TaskStore` strict: `tenantId` required, mensajes JSDoc actualizados. |
+| `src/agent/workflow-engine/persistence/sqlite-task-store.ts` | +30 | `requireTenantId` helper, throw `MissingTenantIdError`. Filtros ya existían de D3.1. |
+| `src/agent/workflow-engine/persistence/in-memory-task-store.ts` | +15 | Idem. Spread siempre (N-1 del audit anterior). |
+| `src/agent/workflow-engine/persistence/migrations.ts` | +30 | `addTenantIdIfMissing` para `sessions` y `spaces`. Whitelist defense. Skip silencioso si tabla no existe (tests con :memory:). |
+| `src/agent/workflow-engine/persistence/index.ts` | +2 | Re-export de `MissingTenantIdError`. |
+| `src/agent/workflow-engine/executor/executor.ts` | +25 | Constructor con 3er param opcional `recoveryTenantIds?: readonly string[]`. `persistCheckpoint` lee `task.tenantId` y lo pasa. Throw `INTERNAL_BUG` si `task.tenantId` está vacío. `purgeTask` lee tenantId antes de borrar. Recovery itera por tenants. |
+| `src/agent/workflow-engine/executor/types.ts` | +5 | Sin cambios D3.2 (enablePersistence ya estaba). |
+| `src/agent/workflow-engine/executor/index.ts` | +2 | Re-export de `MissingTenantIdError`. |
+| `test_workflow_d3_2.mts` | 350+ | 30 tests: A (TaskStore strict), B (InMemory isolation), C (SQLite isolation), D (migrations), E (motor integration). |
+
+**Tests al cierre**: **189/189 tests pasan, 0 fallidos, 0 regresiones**. tsc sin errores nuevos.
+
+**Decisiones de diseño con implicaciones para el futuro** (spec §2):
+
+1. **`tenantId` OBLIGATORIO en `TaskStore`** (§2.1) — fail loud con `MissingTenantIdError` si undefined. Acceso cross-tenant admin queda para D3.3 con métodos explícitos.
+
+2. **NO se introduce `queryFor` wrapper** (§2.4) — descartado por costo/beneficio. 51 queries heterogéneas en el codebase. D3.3 lo decide si hace falta.
+
+3. **Recovery ahora recibe `recoveryTenantIds?: readonly string[]`** (§2.7) — default `['default']` (single-tenant legacy). D3.3+ con auth pasa la lista de tenants que el usuario puede ver.
+
+4. **`sessions` y `spaces` son las únicas tablas del loop D1 que se migran en D3.2** (§2.3) — `messages`, `step_logs`, `tool_calls`, `apify_usage` se difieren a D3.3. Forward-compat puro (columna existe, no se usa).
+
+5. **Whitelist en `addTenantIdIfMissing`** — solo `sessions` y `spaces` permitidas. Defensa contra SQL injection si alguien pasa un valor no controlado. El string concat es seguro porque la whitelist filtra.
+
+6. **Skip silencioso si tabla no existe** — tests con `:memory:` no tienen `sessions`/`spaces`. La migration detecta y no-op. Forward-compat con DBs recién creadas.
+
+7. **`MissingTenantIdError` con mensaje accionable** (§2.5) — menciona `loadCrossTenant` y D3.3 admin como solución. El dev que vea el error sabe qué hacer.
+
+8. **Backward-compat con tests D2a/D3.1** — 184 tests acumulados sin tocar. Los 23 sitios en `test_workflow_d3_1.mts` que llaman `store.save(task)` sin tenantId se arreglaron con `, "default"` literal.
+
+**Archivos tocados (8)**:
+- `AGENT_D3_2_MULTI_TENANT_SPEC.md` (nuevo).
+- `src/agent/workflow-engine/persistence/{errors,task-store,sqlite-task-store,in-memory-task-store,migrations,index}.ts` (5 modificados).
+- `src/agent/workflow-engine/executor/{executor,index}.ts` (2 modificados).
+- `test_workflow_d3_2.mts` (nuevo, 30 tests).
+- `test_workflow_d3_1.mts` (modificado: 23 sitios con `, "default"`, 1 test reescrito que estaba mal etiquetado).
+
+**Bugs encontrados durante implementación**:
+
+1. **`addTenantIdIfMissing` fallaba con `no such table: sessions` en tests `:memory:`** — el spec asume que la tabla existe. Fix: chequeo `sqlite_master` antes del `PRAGMA table_info`. Skip silencioso.
+
+2. **`MissingTenantIdError` se propagaba en `purgeTask`** — el motor llamaba `taskStore.delete(taskId)` sin tenantId. Fix: leer `task.tenantId` antes de borrar del Map. Si la task no estaba en memoria, no llama al store.
+
+3. **C21 del D3.1 estaba mal escrito** — el nombre decía "re-hidrata como paused_hitl" pero el código solo verificaba el store directo, sin crear un `WorkflowExecutor`. Bug latente del sprint anterior, detectado al auditar. Re-escrito y agregado C21b (FIX I-1).
+
+4. **I-1 del audit D3.1 (FIX en este turno)** — el recovery re-mapeaba `running → paused_hitl` con synthetic pendingDecision pero NO persistía al store. Si el server crasheaba dos veces, el segundo startup re-aplicaba la mutación. **Arreglado**: `taskStore.save(task, task.tenantId)` después de la mutación.
+
+**Decisiones que tomé yo en este turno** (registradas en spec §11):
+- Strict `tenantId` obligatorio (en vez de opcional con default). Razón: fuerza a pensar en multi-tenant desde el día 1.
+- No introducir `queryFor` wrapper. Razón: 51 queries heterogéneas, costo/beneficio no justifica. Diferir a D3.3 si hace falta.
+- `recoveryTenantIds` como 3er param opcional (en vez de en `ExecutorConfig`). Razón: menos superficie de cambio.
+- Skip silencioso si tabla no existe en migration. Razón: tests con `:memory:` no rompen.
+- Backward-compat 100% con tests acumulados. 23 sitios en `test_workflow_d3_1.mts` arreglados con `, "default"` literal.
+- Whitelist de tablas permitidas en `addTenantIdIfMissing` (defense in depth).
+
+**Lo que NO toca D3.2** (forward-compat con D3.3):
+- **D3.3**: auth de tenant (JWT/API key), `loadCrossTenant` para admin, sweeper de zombies con `last_heartbeat_at`, audit log multi-tenant completo, migración de `messages`/`step_logs`/`tool_calls`/`apify_usage` con `tenant_id`.
+- **Postgres migration**: la interface no acopla a SQLite. Migrar es swap de implementación.
+- **Encryption at rest**: SQLite no lo trae built-in.
+
+**Audit post-D3.2 (mismo turno)**:
+
+Se hizo una auditoría real del sprint D3.2 (5 ejes, datos) que encontró **6 findings**. El más grave fue un **bug crítico I-1 que NO había sido detectado en el sprint**:
+
+#### **I-1 (Critical en audit, no detectado en sprint): data loss silenciosa cross-tenant**
+
+**Síntoma**: la tabla `paused_tasks` tenía `task_id TEXT PRIMARY KEY` (PK global, no compuesto). Si dos tenants generaban el mismo `taskId`, el `INSERT OR REPLACE` pisaba al primero, y el filtro por tenant en `load()` hacía que el tenant perdedor **perdiera acceso a SU PROPIA task** (data loss silenciosa).
+
+**En producción actual no se manifiesta** porque el motor genera UUIDs con `crypto.randomUUID()` (globalmente únicos). **Pero es un bug latente serio**: si el caller HTTP pasa un `taskId` custom (e.g., para replay), o si dos tasks colisionan por un bug, **la primera task se pierde silenciosamente**. **En Worgena-legal esto es data loss legal-audit.**
+
+**Arreglado en este turno (mismo sprint)**:
+- `paused_tasks` ahora tiene `PRIMARY KEY (task_id, tenant_id)`. PK compuesto.
+- `SqliteTaskStore`: `load`, `loadActive`, `delete` usan WHERE con `tenant_id` además de `task_id`. **Mismo enforcement, sin leak, sin pisado.**
+- `InMemoryTaskStore`: key compuesta `${tenantId}::${taskId}` en el `Map<>`.
+- Test B15 actualizado: ahora verifica la **coexistencia** (dos tenants con mismo `taskId` ven sus propias versiones), no el pisado.
+- `loadActiveStmt` ahora tiene `WHERE tenant_id = ?` en el SQL (no en memoria) — usa el índice `paused_tasks_tenant_idx`, O(log n) por tenant.
+
+**Verificación**: 291/291 tests pasan, 0 regresiones. El test B15 ahora confirma la coexistencia. **El bug I-1 está cerrado.**
+
+#### **Otros findings del audit (todos arreglados en este turno)**:
+- **W-2**: el recovery skipeaba `save` silenciosamente si `task.tenantId` estaba vacío. Ahora loguea `error` con taskId antes de skipear.
+- **W-3**: el `cfg` mock se repetía 5 veces en tests E26-E30. Refactor con helper `makeMockConfig()`.
+- **N-2**: el test B15 original era demasiado permisivo (`assert.ok(!a || ...)`). Endurecido para verificar el comportamiento real (ahora: coexistencia, no pisado).
+
+**Findings diferidos (no bloquean D3.3)**:
+- **W-1**: `addTenantIdIfMissing` usa string template en `PRAGMA/ALTER/CREATE INDEX`. Whitelist valida `tableName` (defense in depth), pero no es best practice. Diferir a D3.4+ o nunca (cambio cosmético).
+- **N-1**: agregar JSDoc al `TaskStore` mencionando el riesgo de colisión cross-tenant (ya mitigado por el PK compuesto).
+
+**Reversibilidad**:
+- Strict `tenantId` es revertible: agregar `?` de vuelta a la interface.
+- Columnas `tenant_id` en `sessions`/`spaces` son aditivas. Forward-compat.
+- `MissingTenantIdError` es removible.
+
+---
+
+## Sprint recién cerrado: D3.1 — Storage Persistence (Cross-Restart del Motor)
+
+**Qué cubre**: primer sprint de D3 (partido en 3 sprints cortos D3.1, D3.2, D3.3). Cierra la deuda **CRIT-1/MAYR-LEGAL**: las tasks `paused_hitl` ahora sobreviven un restart del server. Hasta D2a, la pausa HITL vivía en el `Map<taskId, Task>` del `WorkflowExecutor` (memoria). D3.1 introduce persistencia transaccional con `TaskStore` + `paused_tasks` table en SQLite. Forward-compat con Postgres (interface, no acoplamiento).
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Componentes entregados**:
+
+| Archivo | Líneas | Qué hace |
+|---|---|---|
+| `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` | 350+ | Spec v1.0: 14 decisiones documentadas, schema de tabla, interface, tests planeados. |
+| `src/agent/workflow-engine/persistence/task-store.ts` | 175 | Interface `TaskStore` + helpers `serializeTask`/`deserializeTask` + tipo `TaskRow`. |
+| `src/agent/workflow-engine/persistence/sqlite-task-store.ts` | 130 | `SqliteTaskStore` (better-sqlite3 síncrono, prepared statements cacheados, indices por tenant/status). |
+| `src/agent/workflow-engine/persistence/in-memory-task-store.ts` | 65 | `InMemoryTaskStore` (Map<>, para tests). |
+| `src/agent/workflow-engine/persistence/migrations.ts` | 50 | Crea `paused_tasks` + 2 índices, idempotente. |
+| `src/agent/workflow-engine/persistence/index.ts` | 15 | Barrel. |
+| `test_workflow_d3_1.mts` | 728 | 38 tests: A (InMemory), B (SQLite), C (Recovery), D (Checkpoints), E (Handler). |
+| `src/agent/workflow-engine/executor/executor.ts` | +120 | Constructor con `taskStore?` opcional. `recoverActiveTasks()` re-hidrata en startup. `persistCheckpoint()` helper central. `pauseForHITL` y transiciones de estado persisten. `purgeTask` elimina del store. `running → paused_hitl` sintética si la task estaba corriendo al crash. |
+| `src/agent/workflow-engine/executor/types.ts` | +20 | Campo `enablePersistence?: boolean` en `ExecutorConfig`. Método opcional `onResumeFromRestart?` en `HITLHandler`. |
+| `src/agent/workflow-engine/executor/index.ts` | +10 | Re-exporta `TaskStore`, `InMemoryTaskStore`, `SqliteTaskStore`, `runPersistenceMigrations`. |
+
+**Tests al cierre**: **260+ tests pasan, 0 fallidos, 0 regresiones** (54 executor + 36 D2a.2.3 + 18 D2a.4 + 7 D2a.5 + 16 D2b.1 + 64 D2b.2 + 27 D2c + 38 D3.1). tsc sin errores nuevos en código D3.1.
+
+**Decisiones de diseño con implicaciones para el futuro** (spec §11):
+
+1. **`TaskStore` interface sync, no async**. better-sqlite3 es síncrono. Forward-compat con Postgres: si migramos, se cambia la interface a `Promise<T>` o se usa PGlite. La interface se mantiene.
+2. **Solo se persisten tasks no terminales** (spec §2.1). `completed`/`failed`/`cancelled` se purgan al `save()`. Razón: el `TaskStore` es para work-in-progress, no para audit histórico.
+3. **Sync write dentro de transacción atómica de SQLite**. Si `save` lanza, NINGÚN cambio se persiste. El motor NO captura — se propaga al caller. Trade-off: bloquear el event loop en checkpoints, pero es SQLite local en WAL (~ms por write). Aceptable.
+4. **Recovery al startup en el constructor del executor**. Lee `store.loadActive()` y re-hidrata. Tasks `running` al crash se re-mapean a `paused_hitl` con `requestId="synthetic-from-restart"` (señal al handler externo: "esto fue un crash, no había notificación previa"). D3.3 sweeper decide qué hacer.
+5. **`HITLHandler.onResumeFromRestart?` opcional**. Si el handler lo implementa, recibe la notificación. Si no, no pasa nada. Backward-compat: los `MockHITL` de tests D2a.4 no lo implementan, no hay que tocarlos.
+6. **`enablePersistence: false` por default (opt-in)**. No rompe tests existentes que no esperan writes a DB. Forward-compat: en D3.3 flipeamos a `true` para producción.
+7. **`cleanup()` no toca el store** (consistente con D2a.2.3 "soft reset"). `purgeTask` SÍ elimina del store. Si el caller quiere borrar, lo hace explícito.
+8. **NO sweeper automático en D3.1**. Las tasks zombie quedan como `paused_hitl` sintética. D3.3 introduce sweeper con `last_heartbeat_at`.
+9. **Schema versioning de la tabla**: la tabla `paused_tasks` está versionada por SQL (`CREATE TABLE IF NOT EXISTS`). Forward-compat: si en D3.2+ agregamos `tenant_id` real, es un `ALTER TABLE` con migración idempotente (mismo patrón que `src/lib/db.ts` ya usa).
+10. **JSON.stringify como serialización** (sin revivers). El `Task` y todos sus sub-tipos son JSON-safe por convención (ver `dsl/types.ts`). Si en D3.3+ guardamos `Buffer` (raw prompts para audit forense), agregamos un replacer.
+
+**Archivos tocados (10)**:
+- `AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md` (nuevo, ~360 LoC).
+- `src/agent/workflow-engine/persistence/{task-store,sqlite-task-store,in-memory-task-store,migrations,index}.ts` (5 nuevos).
+- `src/agent/workflow-engine/executor/{executor.ts,types.ts,index.ts}` (3 modificados, backward-compat).
+- `test_workflow_d3_1.mts` (nuevo, 38 tests).
+
+**NO se toca** (confirmado en auditoría):
+- `src/agent/agent.ts` (loop D1).
+- `src/agent/tools.ts`, `src/agent/memory.ts`, `src/agent/skills/**`, `src/agent/specialists/**`, `src/agent/llm/**`.
+- `server.ts` (D3.1 no cablea el motor al server; eso es D3.3+).
+- `src/lib/db.ts` (la tabla `paused_tasks` la crea `persistence/migrations.ts`, no la DB global).
+
+**Bugs encontrados durante implementación** (todos arreglados, documentados):
+1. **Spec inicial duplicaba `hitlHandler` en `ExecutorOptions`** — corregido tras leer `executor/types.ts` que ya lo tiene en `ExecutorConfig`. Decisión: segundo param del constructor es solo `TaskStore | undefined`.
+2. **Tests C19/C21/C24/C25 sin `enablePersistence: true`** — fallaban porque el recovery solo corre si está habilitado. Tests corregidos.
+3. **`SqliteTaskStore.save` no purgaba tasks terminales** (inconsistencia con `InMemoryTaskStore`). Arreglado con check al inicio de `save()`.
+4. **Test C24 esperaba 2 calls al handler** pero las tasks no tenían `pendingDecision`, así que el handler no se llamaba. Test corregido.
+
+**Decisiones que tomé yo en este turno** (registradas en spec §11):
+- **Sync vs async**: elegí sync. Postgres se puede integrar después con PGlite o cambiando la interface.
+- **No sweeper**: las tasks zombie quedan como `paused_hitl` sintética. D3.3 introduce el sweeper.
+- **enablePersistence default false**: conservador. No rompe tests.
+- **`cleanup` no toca el store**: comportamiento documentado en D2a.2.3 "soft reset" se mantiene.
+- **`SqliteTaskStore` purga terminales**: para que la tabla no acumule tasks viejas que el caller ya considera terminales.
+
+**Lo que NO toca D3.1** (forward-compat con D3.2 y D3.3):
+- **D3.2**: multi-tenant real. `tenant_id` se usa en queries, wrapper `pool.queryFor(tenantId, sql, params)`, tests de aislamiento entre tenants. La interface `TaskStore` ya recibe `tenantId` opcional — D3.2 la enchufa.
+- **D3.3**: auth de tenant (JWT/API key por firma), sweeper de zombies con `last_heartbeat_at`, audit log completo con `prompt_sent` y `raw_response` por Agent ID.
+- **Postgres migration**: la interface no acopla a SQLite. Migrar es swap de implementación.
+- **Encryption at rest**: SQLite no lo trae built-in. Forward, post-D6.
+
+**Reversibilidad**: todas las decisiones son reversibles con `git revert` del sprint. La interface `TaskStore` queda como contrato forward-compat. La tabla `paused_tasks` puede migrarse a otro schema (DB-per-tenant, etc.) sin tocar el motor.
 
 ---
 
@@ -192,6 +405,67 @@
 **Decisiones que tomé yo en este turno (registradas en spec §8)**: 20 decisiones, todas reversibles. La más opinada fue la **transición `done → busy` permitida en la tabla del Lifecycle** (no estaba en el spec original, fue necesaria para que el replay funcione con specialists reusados). La más técnica fue el **mapeo de errores HTTP a `ErrorCode`** (la tabla §3.2 del spec está en `mapHttpStatusToMotorCode` en `openrouter-errors.ts`, función pura testeable independientemente).
 
 **Lo que NO toca D2b.2** (deuda a sprints futuros): A2A server HTTP (D3+), streaming (D3+ o demanda), `read_section` real (D3+), principios jurídicos (D2c), MCP, multi-tenant (D3), circuit breaker por specialist (D3+), SaC (D3+ con cliente), pricing configurable por tenant (D3), cost attribution con desglose de reasoning tokens (D3).
+
+---
+
+## Sprint recién cerrado: D2c — Skills v1 (2026-06-13 mañana)
+
+**Qué cubre**: sprint que formaliza el packaging de las topic-based policies de D1 como skills v1. Roadmap §5.4, §5.7, §5.14. Pre-requisito de D6.
+
+**Estado**: ✅ CERRADO en este turno.
+
+**Qué se entrega** (3 archivos de código + 1 skill real + 1 spec + 1 test):
+
+| Archivo | Líneas | Qué hace |
+|---|---|---|
+| `AGENT_D2C_SKILLS_V1_SPEC.md` | 350+ | Spec v1.0: formato SKILL.md, front matter YAML, algoritmo de discovery, integración con specialists, 8 decisiones de diseño. |
+| `src/agent/skills/skill.ts` | 130 | Tipo `Skill` + parser de SKILL.md (YAML front matter + markdown body). Falla loud en front matter inválido. |
+| `src/agent/skills/skill-registry.ts` | 145 | `SkillRegistry`: `loadFromDir()` (filesystem) + `create()` (in-memory) + `discover()` (determinista por topic + jurisdicción + keywords). |
+| `src/agent/skills/index.ts` | 25 | Barrel + helper `formatSkillsForPrompt(registry, ctx)`. |
+| `skills/juridica-colombia/SKILL.md` | 30 | Skill real con los 5 principios del roadmap §5.14. |
+| `test_workflow_d2c.mts` | 280 | 24 tests: parser, registry, discover, integración con filesystem, integración con `ClauseReviewerSpecialist`. |
+| `src/agent/specialists/specialist.ts` | +5 | Campo opcional `skills?: SkillRegistry` en el interface. Backward-compat. |
+| `src/agent/specialists/clause-reviewer-specialist.ts` | +30 | Constructor acepta `SkillRegistry` opcional. `buildSystemPrompt()` ahora recibe `discoveryCtx` y concatena skills. Lee `node.metadata.topic/jurisdiction` si están. |
+
+**Decisiones de diseño** (8, registradas en spec §11):
+
+1. **Front matter YAML, no JSON** — estándar en tooling de skills (Anthropic, Cursor).
+2. **Skills son markdown, no código** — se cargan como string. Forward-compat con D6.
+3. **Discovery determinista, no por LLM** — keywords + topic. Debuggeable, sin alucinación.
+4. **Score explícito** — 10 topic + 5 jurisdicción + 1 keyword. El caller puede reimplementarlo.
+5. **No hay `enable/disable` por skill** — si está en disco, está activa. Para D6.
+6. **El motor no sabe de skills** — los specialists son el único punto de integración.
+7. **`loadFromDir` falla loud** — si una SKILL.md está malformada, el boot falla.
+8. **Auditoría es opcional** (callback). Forward-compat con D3+.
+
+**Compatibilidad con sprints anteriores**:
+- **D1 (policy-engine)**: `test_policy_engine.mts` sigue pasando tal cual. Las skills son una capa nueva encima, no reemplazan las policies.
+- **D2b (specialists)**: el `skills?: SkillRegistry` es **opcional** en el interface. Los 16 tests D2b.1 y 64 tests D2b.2 siguen pasando sin cambios. Los callers que no quieran skills no las reciben (modo backward-compat).
+- **AUDIT_D2 #2 (CRIT-2)**: el catálogo de tools se enchufa al `OpenRouterLLMInvoker` (forward-compat ya aplicado).
+
+**Tests al cierre**: **256/256 pasan** (230 originales + 24 nuevos + 2 suites externas confirmadas: `test_policy_engine.mts` + `test_workflow_dsl_schema.mts`). Cero regresiones. tsc limpio.
+
+**Lo que NO toca D2c** (deuda a sprints futuros):
+- **D6 (editor)**: el usuario edita skills. Cambia `loadFromDir` a `loadFromDir` + override de usuario. Sin breaking change en API pública.
+- **Multi-tenant skills (D3+)**: catálogo por tenant. `SkillRegistry.loadFromDir(tenantId)`. El interface no cambia.
+- **Skill v2 con runtime**: el `Skill` type gana `runtime?: TypeScriptModule` para lógica custom. Las skills v1 (markdown) siguen funcionando.
+- **Auditoría persistida (D3+)**: el `audit` callback de skills es opcional hoy; en D3+ se logueará a DB.
+
+**Demo end-to-end del discovery** (en test 24):
+
+```
+SkillRegistry.loadFromDir("./skills")
+  → 1 skill cargada: juridica-colombia (CO, jurisprudencia+tributario+laboral+comercial)
+
+discover({
+  topic: "jurisprudencia",
+  jurisdiction: "CO",
+  userMessage: "...sentencia de la Corte Constitucional sobre una tutela y una ley"
+})
+  → [{ skill: juridica-colombia, score: 18 }]   (10 topic + 5 CO + 3 keywords)
+```
+
+El `ClauseReviewerSpecialist`, al ejecutar un nodo con `node.metadata.topic = "jurisprudencia"` y `node.metadata.jurisdiction = "CO"`, inyecta el cuerpo completo de la skill en su system prompt. Forward-compat con cualquier dominio: si mañana se agrega `skills/tributaria-co/SKILL.md`, automáticamente se descubre y se carga.
 
 ---
 
@@ -481,3 +755,30 @@
 - **2026-06-12 (D2b.2)**: sprint D2b.2 cerrado. Spec `AGENT_D2B_2_SPEC.md` v1.0 escrita y auditada (20 decisiones). 5 archivos nuevos en `src/agent/llm/` (cliente HTTP con `fetch` directo, errores con código del motor, invoker, pricing catalog, barrel) + 3 archivos nuevos en `src/agent/specialists/` (AgentCard A2A v1.0, Lifecycle state machine, 3 cards pre-construidos). Refactor de 4 archivos en `specialists/` (+agentCard, +lifecycle, +transiciones, sub-sesión del verifier con prompt limpio, Citation Grounding v2 heurística). 56 tests nuevos en `test_workflow_d2b_2.mts` (incluyendo smoke E2E con OpenRouter real que retornó `modelUsed=deepseek/deepseek-chat-v3, costUsd=$0.0000139`). 2 tests D2b.1 actualizados por cambios de contrato intencionales (`agentVersion` a `"1.0.0"` desde el agentCard, output del verifier con metadata de audit). 6 bugs encontrados y arreglados durante implementación (el más interesante: tabla del Lifecycle no permitía `done → busy` y rompía el replay, arreglado). **221/221 tests pasan**. Cero regresiones. **D2b cerrado completo** (multi-modelo real + 3 specialists reales + Agent Cards + Lifecycle + sub-sesión verifier). Próximo sprint propuesto: D2c (skills v1 + principios jurídicos colombianos).
 - **2026-06-12 (AUDIT_D2_CLEANUP, tarde)**: sprint de limpieza que arregla 18 de 27 hallazgos de `AUDIT_D2_2026-06-12.md` en orden de urgencia. Sin features nuevas. 1 crítico (CRIT-2: tools silenciosamente perdidas — ahora falla loud), 6 mayores (MAY-1/3/4/5/6/10), 8 menores (MIN-1/3/5/6/7/8/11 + NIT-5), 2 nits. 3 cambios breaking: MAY-1 (`loadWorkflow` ahora retorna `{workflow, appliedMigrations}`), MIN-5 (`NodeResult.costUsd` no opcional), MIN-7 (tira error en agentId duplicado). 12 archivos de código tocados + 2 specs (D2b.2 §3.2 encoding fix, §5.8 MAY-8, §5.9 MIN-8). **227/227 tests pasan** (221 + 6 nuevos). Cero regresiones. **D2 listo para D2c**. Pendiente: MAY-7 (signature de factory), MAY-2 (doc fix), MAYR-LEGAL (esperar D3 con DB).
 - **2026-06-12 (AUDIT_D2_CLEANUP #2, noche)**: sprint de limpieza que cierra 4 hallazgos pendientes del #1. MAY-2 cerrado: cleanup() documentado como 'soft reset' (libera 2: cache + flag cancelacion; retiene 3: task + workflow + status). Spec sec 9.3 y doc en executor.ts sincronizados. MAY-7 cerrado: SpecialistFactory ahora acepta preferredModel opcional. Si esta presente, el registry invoca el factory 1 vez (antes 2: stub + real). 5 callers actualizados. Fallback backward-compat. NIT-1 y NIT-4 re-clasificados como falsos de mi auditoria. 3 tests nuevos (1 MAY-2, 2 MAY-7). 230/230 tests pasan. tsc limpio. Decision del founder sobre CRIT-1/MAYR-LEGAL: opcion B - esperar a D3 (multi-tenant + DB) y meterlo ahi. 1 tabla paused_tasks es trabajo chico dentro del sprint D3.
+- **2026-06-13 (D2c, ma�ana)**: sprint Skills v1 cerrado. Spec AGENT_D2C_SKILLS_V1_SPEC.md v1.0 escrita y auditada (8 decisiones). 3 archivos nuevos en src/agent/skills/ (skill.ts con parser YAML front matter, skill-registry.ts con loadFromDir + discover determinista, index.ts barrel con helper formatSkillsForPrompt). 1 skill real en skills/juridica-colombia/SKILL.md con los 5 principios de roadmap �5.14. Modificaciones m�nimas a specialist.ts (campo opcional skills? en interface) y clause-reviewer-specialist.ts (constructor acepta SkillRegistry, buildSystemPrompt inyecta skills relevantes leyendo node.metadata.topic/jurisdiction). 24 tests nuevos en test_workflow_d2c.mts (parser, registry, discover, integraci�n con filesystem, integraci�n con clause_reviewer). 256/256 tests pasan (230 originales + 24 nuevos + 2 suites externas confirmadas: test_policy_engine + test_workflow_dsl_schema). tsc limpio. Cero regresiones. D2c cerrado. Pr�ximo sprint propuesto: D3 (multi-tenant + DB + storage cross-restart CRIT-1/MAYR-LEGAL).
+- **2026-06-13 (AUDIT_D2C_CLEANUP #1, ma�ana)**: sprint de limpieza que cierra 7 hallazgos accionables de AUDIT_D2C_2026-06-13.md (3 mayores + 4 menores; 3 nits skipped por no aportar valor). MAY-1: sync spec �5.2 (discover retorna SkillMatch[] no Skill[]). MAY-2: agregado metadata? opcional a LLMNode type, eliminado cast feo en clause-reviewer-specialist. MAY-3: sync spec �6.2 (discover per-execute, no pre-loop). MIN-1: 3 tests nuevos para formatSkillsForPrompt (vacio, registry vacio, matches). MIN-2 + MIN-3: spec �4.4 doc convenciones de keywords (lowercase, singular, sin _). MIN-4: test 23 chequea primero si existe la skill real y tira error claro. 3 tests nuevos (total 259/259). tsc limpio. Cero regresiones. Listo para D3.
+- **2026-06-13 (D3.1, ma�ana)**: sprint Storage Persistence (Cross-Restart del Motor) cerrado. Spec AGENT_D3_1_STORAGE_PERSISTENCE_SPEC.md v1.0 escrita y auditada (14 decisiones, 10 secciones, tabla paused_tasks + 2 indices, interface TaskStore con tenantId opcional, recovery al startup con re-mapping running→paused_hitl sintética). 5 archivos nuevos en src/agent/workflow-engine/persistence/ (interface TaskStore, SqliteTaskStore, InMemoryTaskStore, migrations idempotentes, barrel). Modificaciones backward-compat a executor (constructor acepta taskStore?: TaskStore, helper persistCheckpoint() central, recoverActiveTasks() en startup, transiciones de estado persisten checkpoints, purgeTask elimina del store). Types del executor extendidos: enablePersistence? en ExecutorConfig, onResumeFromRestart? opcional en HITLHandler. 38 tests nuevos en test_workflow_d3_1.mts organizados en 5 bloques (A: InMemory 10, B: SQLite 8, C: Recovery 8, D: Checkpoints 8, E: Handler 4). 260+ tests pasan en total (54 executor + 36 D2a.2.3 + 18 D2a.4 + 7 D2a.5 + 16 D2b.1 + 64 D2b.2 + 27 D2c + 38 D3.1). tsc sin errores nuevos. Cero regresiones. CRIT-1/MAYR-LEGAL CERRADO. Decisión del founder sobre scope: D3 partido en 3 sprints cortos (D3.1 storage, D3.2 multi-tenant, D3.3 auth+sweeper+audit). Próximo sprint propuesto: D3.2 — Multi-Tenant Schema (tenant_id en queries + wrapper pool.queryFor + tests de aislamiento).
+- **2026-06-13 (D3.2, media ma�ana)**: sprint Multi-Tenant Schema + Enforcement en TaskStore cerrado. Spec AGENT_D3_2_MULTI_TENANT_SPEC.md v1.0 escrita (14 secciones, 8 decisiones §2.1-§2.10, no queryFor wrapper, interface strict tenantId required, migraciones idempotentes con whitelist). 1 archivo nuevo en errors.ts (MissingTenantIdError). 5 archivos modificados en persistence/ (TaskStore interface strict, ambos stores con requireTenantId helper, migrations.ts con addTenantIdIfMissing idempotente, whitelist, skip silencioso para tests :memory:). 2 archivos modificados en executor/ (constructor con 3er param recoveryTenantIds?: readonly string[] default ['default'], persistCheckpoint lee task.tenantId y valida no-vacío, purgeTask lee tenantId antes de borrar). 30 tests nuevos en test_workflow_d3_2.mts organizados en 5 bloques (A: TaskStore strict 10, B: InMemory isolation 7, C: SQLite isolation 4, D: migrations 4, E: motor integration 5). 23 sitios en test_workflow_d3_1.mts arreglados con ', "default"' literal. 1 bug latente del D3.1 detectado y arreglado (C21 estaba mal escrito: verificaba store sin crear WorkflowExecutor). FIX I-1 del audit D3.1 aplicado: recovery ahora persiste la mutación running→paused_hitl al store. 189/189 tests pasan en total. tsc sin errores nuevos. Cero regresiones. Decisión: NO queryFor wrapper (costo/beneficio desfavorable para 51 queries heterogéneas; diferir a D3.3 si hace falta). Decisión: solo sessions y spaces migradas en D3.2; messages/step_logs/tool_calls/apify_usage difieren a D3.3. Próximo sprint propuesto: D3.3 — Auth de tenant (JWT/API key) + loadCrossTenant admin + sweeper de zombies con last_heartbeat_at + audit log multi-tenant completo + migración de las 4 tablas restantes.
+- **2026-06-13 (D3.3, tarde)**: sprint AuthProvider + Sweeper de Zombies + Workflow Audit cerrado. Spec AGENT_D3_3_AUTH_SWEEPER_AUDIT_SPEC.md v1.0 escrita (12 secciones, 10 decisiones §2.1-§2.10). 4 archivos nuevos en persistence/ (auth-provider.ts con interface + StaticTenantProvider stub, workflow-audit.ts con interface + tipos, sqlite-workflow-audit.ts + in-memory-workflow-audit.ts). Modificaciones: migrations.ts agrega columna `last_heartbeat_at INTEGER` en paused_tasks + tabla `workflow_audit` con 2 índices (tenant_id, task_id). Executor.ts: constructor extendido con 4to y 5to param (authProvider?, audit?), `sweepStaleTasks(maxAgeMs)` público, `recordAudit()` helper privado que NO bloquea el motor si falla, `startTask()` extendido con `options?: { tenantId?: string }` para override del provider. Audit hooks en `persistCheckpoint()` (6 triggers: start/pause_hitl/resume/complete/fail/cancel) y en `recoverActiveTasks()` (evento `recovery`). 28 tests nuevos en test_workflow_d3_3.mts organizados en 5 bloques (A: AuthProvider 5, B: Sweeper 8, C: heartbeat+touch 5, D: workflow_audit 5, E: integracion 5). **151/151 tests del motor pasan** (39 D3.1 + 30 D3.2 + 28 D3.3 + 54 executor). tsc sin errores nuevos. Cero regresiones. **D3 cerrado completo**. Decisiones revertidas durante implementacion: (1) orden SWEEP→RECOVERY (no RECOVERY→SWEEP como decía spec §3.7) — recovery pisaba las running antes que el sweeper pudiera verlas. (2) `save()` ahora setea `last_heartbeat_at = Date.now()` — el caller NO necesita llamar `touch()` después. (3) sweeper usa `<=` en vez de `<` para que `maxAgeMs=0` barra task con heartbeat = now. Decisiones diferidas a D3.4+: auth real con JWT, cron sweeper, queries multi-tenant en D1 tables (messages, step_logs, tool_calls, apify_usage), `loadCrossTenant` admin, forense profundo en audit (`prompt_sent`/`raw_response` por Agent ID).
+- **2026-06-14 (D3.4-D3.5 PLAN, mañana)**: spec `AGENT_D3_4_5_DB_AUTH_SPEC.md` v1.0 escrita (12 secciones, 12 decisiones §2.1-§2.12). Decisión arquitectónica: **auth propio con Better Auth + Google OAuth + SQLite** (no Clerk, no WorkOS, no Supabase Auth). Razón: ahorrativo desde día 1, datos del user en TU DB (compliance habeas data Colombia sin sub-procesadores), robusto para un cliente enterprise chico, lock-in bajo (Better Auth es librería, no servicio). Investigación previa: verificada doc oficial de Better Auth (Google provider + SQLite adapter con better-sqlite3) y del proyecto (`pool` wrapper pg-style sobre SQLite, no Postgres todavía). 2 sprints cortos planificados: **D3.4** (auth principal: instalar deps, crear `src/lib/auth/auth.ts` con instancia de betterAuth, `handlers.ts` con Express handlers, `DbAuthProvider` que implementa `AuthProvider`, middleware en `server.ts` con helmet + rate limit + authMiddleware, página `/login`, 24 tests E2E, ~10h dev) y **D3.5** (hardening: 2FA TOTP plugin, `audit_auth` table persistente, `SECURITY.md` doc para enterprise, 12 tests, ~7-8h dev). Total 36 tests nuevos. Regla 11 de AGENTS.md (consultar antes de servicios de terceros) aplicada: Better Auth es librería open source MIT (no servicio), no requiere consulta; Sentry / Resend / Cloudflare (forward D3.6+) sí los voy a proponer uno por uno con análisis corto antes de cablear. Próximo paso: **esperar aprobación del founder para arrancar implementación de D3.4**.
+- **2026-06-15 (DECISIONES DE EMBEDDINGS, setup D4 D5)**: decisiones registradas para que arranque D4 D5 sin reabrir el debate. NO es sprint de implementación, es registro de decisiones del founder tras la conversación de costos D4.
+
+  **Contexto**: founder preguntó costo de ingesta inicial (100k docs legales institucionales) y costo por query RAG. Se compararon 3 opciones de hosting de BGE-M3 (local en Acer Nitro V15 16GB RAM 4GB VRAM, HF Inference API, self-host GPU cloud) y 4 opciones de LLM para resúmenes (sonnet $20k, deepseek-chat OpenRouter $200, deepseek-v4-flash OpenCode Zen pagado $420, deepseek-v4-flash-free OpenCode Zen $0).
+
+  **Decisiones tomadas**:
+
+  1. **Embeddings corren local en Acer Nitro V15** (BGE-M3, ONNX fp16, ~1.1GB VRAM, ~50 chunks/seg, ~5.6 horas para ingesta 100k docs). Costo $0. Justificación: 4GB VRAM alcanza para fp16, founder tiene la laptop, no requiere devops. Forward-compat: `OpenRouterClient.embeddings()` ya existe (`src/agent/llm/openrouter-client.ts:287`) como abstracción compatible. Si volumen crece o Nitro se vuelve cuello de botella, migrar a self-host GPU cloud (~$0.30 + 30 min para la misma ingesta) o HF Inference API ($6-36 one-time).
+
+  2. **Resúmenes de ingesta inicial usan `deepseek-v4-flash-free` de OpenCode Zen** (durante la ventana promocional, $0/M in, $0/M out). Cláusula "datos pueden usarse para entrenar el modelo" es **aceptada explícitamente** porque los 100k docs son institucionales (no de clientes), no hay restricción de compliance ni secreto profesional. Costo $0, 1-3 horas background.
+
+  3. **Trigger de migración registrado** (regla 6: no improvisar, registrar el punto de bifurcación): si OpenCode desactiva el tier free o la ingesta de resúmenes supera la ventana promocional, migrar a `deepseek-v4-flash` pagado (mismo modelo, sin cláusula de entrenamiento) = **~$420 one-time** para ingesta completa. Si el embedding local en Nitro se vuelve cuello de botella, migrar a self-host GPU cloud o HF Inference.
+
+  4. **Costo por query RAG post-ingesta**: ~$0.001 con `deepseek/deepseek-chat` (Tier 3 liviano, ya en `pricing-catalog.ts`). Proyección 10 clientes activos, 200 queries/día = ~$6/mes operativo total.
+
+  **Archivos modificados** (sin código nuevo, solo docs + 2 entries en pricing catalog):
+  - `PLATFORM_VISION.md` §3.2 — sección "Decisión de costo de ingesta inicial" agregada.
+  - `AGENT_ROADMAP.md` §5.5 — Tier 2 ahora documenta el hosting local en Nitro.
+  - `src/agent/llm/pricing-catalog.ts` — agregados `deepseek-v4-flash` y `deepseek-v4-flash-free` al `DEFAULT_MODEL_PRICING`. Comentarios actualizados con la fecha 2026-06-15.
+  - `HANDOFF.md` — esta entrada en el changelog.
+
+  **Lo que NO se hizo** (regla 8, esperar orden explícita del founder): no se escribió código de ingesta, no se creó el `OpenCodeZenClient`, no se arrancó el spec de D4. El registro queda listo para que cuando el founder apruebe arrancar D4, las decisiones estén documentadas y el código se escriba contra este plan.

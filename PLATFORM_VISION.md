@@ -278,7 +278,27 @@ El verificador determina de qué tipo es cada cita y valida contra la fuente cor
 - **Reranker**: después de recuperar 20 unidades, un modelo cross-encoder (ej. BGE-Reranker) los reordena por pertinencia real. Con corpus de 100K+ documentos, los 20 resultados iniciales pueden incluir ruido; el reranker filtra eso. Costo estimado: ~$0.0001 por consulta.
 - **Resúmenes con LLM**: se generan durante la ingesta inicial, estructurados por sección con proposiciones jurídicas clave y sus artículos. Son parte integral del Índice Documental desde el día uno.
 - **Modelo de embeddings**: BGE-M3 (568M params, 1024 dims, dense + sparse nativo, 8192 tokens de contexto).
+- **Hosting de embeddings** (decisión 2026-06-15, ver `HANDOFF.md` §Decisiones-de-embedding): **BGE-M3 corre local en el hardware del founder** (Acer Nitro V15, 4GB VRAM, ONNX fp16, ~50 chunks/seg, ~5.6 horas para ingesta inicial de 100k docs). Costo: $0. Forward-compat: la interface `OpenRouterClient.embeddings()` (`src/agent/llm/openrouter-client.ts:287`) queda como ruta alternativa para D5+ si el volumen lo justifica (self-host GPU cloud o HF Inference).
 - **Base vectorial**: Qdrant local o cloud, con soporte para vectores densos y dispersos, filtros por payload y RRF (Reciprocal Rank Fusion).
+
+##### Decisión de costo de ingesta inicial (100k docs legales institucionales)
+
+Razón por la que se eligió este plan: los 100k documentos legales son **institucionales** (no de clientes), no hay restricción de compliance ni de secreto profesional.
+
+| Fase | Modelo / método | Costo | Tiempo |
+|---|---|---|---|
+| Embeddings (1M chunks × 1200 tokens) | BGE-M3 local (ONNX fp16 en Nitro) | **$0** | ~5.6h bloqueadas |
+| Resúmenes estructurados (0.6B in + 0.4B out) | `deepseek-v4-flash-free` vía OpenCode Zen, durante la ventana promocional | **$0** | 1-3h background |
+| **Total ingesta inicial** | | **$0** | 1-3h + 5.6h |
+
+**Trigger de migración** (registrado en `HANDOFF.md`): si OpenCode desactiva el tier free o la ingesta de resúmenes supera la ventana promocional, migrar a `deepseek-v4-flash` pagado ($0.14/M in, $0.28/M out, mismo modelo sin cláusula de entrenamiento) = **~$420 one-time** para la ingesta completa. Si el embedding local en Nitro se vuelve cuello de botella, migrar a self-host GPU cloud = ~$0.30 + 30 minutos para la misma ingesta.
+
+**Costo por query RAG** (post-ingesta, 1 cliente activo, 50 queries/día):
+- Embedding query (50 tokens): ~$0.000001 (BGE-M3 local, despreciable).
+- Retrieval (pgvector local): $0.
+- LLM generación (top-5 chunks = ~6k in + 800 out): **~$0.001** con `deepseek/deepseek-chat` (Tier 3 liviano, ya en `pricing-catalog.ts`).
+- **Total por query: ~$0.001** (un décimo de centavo).
+- **Proyección 10 clientes activos, 200 queries/día, 30 días**: ~$6/mes operativo total.
 
 ##### Métricas de evaluación integradas
 
