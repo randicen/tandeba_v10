@@ -10,6 +10,70 @@
 
 ## Estado al cierre de esta sesión
 
+**Fecha**: 2026-06-24
+**Sesión**: housekeeping del working tree + decisión arquitectónica sobre reorganización de la historia git.
+
+### Housekeeping del working tree (2026-06-24)
+
+Antes de esta sesión el working tree tenía **27 commits ahead de origin/master sin pushear**, 15 archivos modificados sin commitear, y 18 untracked — incluyendo specs de D3.x, código de D3.x (persistence dir + executor + tests), skill real, BACKLOG_P0, y 5083 archivos de `.tmp/harness-study/` (research material clonado que NO debía commitearse).
+
+**Sesión de housekeeping cerrada**: 4 commits creados y pusheados a `origin/master`:
+
+| Commit | Hash | Qué cierra |
+|---|---|---|
+| `feat(d2c)` | `7225acb` | Skills v1 (D2c) + 7 hallazgos de AUDIT_D2C (incluye MAY-2 `LLMNode.metadata`) |
+| `feat(d3)` | `099d8e7` | D3.1 (storage cross-restart) + D3.2 (multi-tenant enforcement) + D3.3 (auth stub + sweeper + audit) + audit fix I-1 (PK compuesto) |
+| `docs(d3.4-d3.5)` | `2a2891c` | Spec de auth real con Better Auth + hardening (2FA + audit_auth) — NO implementado |
+| `chore` | `15890be` | Housekeeping: HANDOFF/ROADMAP updates, BACKLOG_P0, Asesoría Steve, reel-chatgpt additions, `.gitignore` ampliado, WAL files untracked |
+
+### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
+
+`feat(d3)` (099d8e7) combina los 3 sprints cortos D3.1 + D3.2 + D3.3 en un solo commit porque **el diff de `executor.ts` (+411 líneas) mezcla cambios de los 3 sprints de forma inseparable** sin reconstruir manualmente estados intermedios (alto riesgo de commits rotos donde persistence existe sin executor que la enchufe, o viceversa).
+
+**Justificación de la decisión (Woz, 2026-06-24):**
+
+- **Costo de reorganizar**: ~30-60 min de git-level magic + re-validación de tests en cada estado intermedio. Riesgo real de corromper la historia (ya ocurrió una vez durante el housekeeping).
+- **Beneficio**: ability de `git revert` atómico por sub-sprint. Mitigación alternativa: `git revert -n <sha>` + descartar archivos específicos.
+- **Mensaje del commit**: documenta explícitamente las sub-secciones `===== D3.1 =====`, `===== D3.2 =====`, `===== D3.2 audit fix I-1 =====`, `===== D3.3 =====`. Un futuro lector que busque código de D3.2 hace `git show 099d8e7` y lee la sección.
+- **Forward-compat preservada**: si en el futuro hace falta split atómico (e.g., `git bisect` sobre regresión entre D3.1 y D3.3), se puede hacer en una branch efímera `git checkout -b chore/split-d3 099d8e7` sin tocar master.
+
+### Tests al cierre de housekeeping
+
+**354 tests pasan, 0 fallidos, 0 regresiones.** Suites verificadas:
+
+| Suite | Tests |
+|---|---|
+| test_workflow_d2c.mts | 27 |
+| test_workflow_d3_1.mts | 39 |
+| test_workflow_d3_2.mts | 30 |
+| test_workflow_d3_3.mts | 28 |
+| test_workflow_executor.mts | 54 |
+| test_workflow_d2a_2_3.mts | 36 |
+| test_workflow_d2a_4.mts | 18 |
+| test_workflow_d2a_5.mts | 7 |
+| test_workflow_d2b_1.mts | 16 |
+| test_workflow_d2b_2.mts | 64 |
+| test_workflow_dsl_parser.mts | 35 |
+
+tsc reporta 72 errores pre-existentes (en `parser.ts` y tests viejos con imports de tipos refactorizados) — NO introducidos por este commit.
+
+### Próximo sprint propuesto: **D3.4 — Auth real con Better Auth**
+
+Spec ya escrita: `AGENT_D3_4_5_DB_AUTH_SPEC.md` (commiteada en `2a2891c`).
+
+**Bloquea**: pasar a D4 (memoria 4 capas), D5 (RAG), D6 (editor de skills).
+
+**Orden por fundamento (regla 6b de AGENTS.md)**: D3.4 antes que Backlog P0 §1 (scrub de secretos) porque sin auth real no hay separación de tenants de usuario, y el scrub de secretos opera a nivel de step_logs que es por-tenant. Auth primero, scrub después.
+
+**Items Backlog P0 pendientes** (`BACKLOG_P0.md`):
+1. Scrub de secretos en `step_logs` (P0) — depende de D3.4 parcialmente
+2. Auth real en motor — **D3.4 cubre esto**
+3. Costo LLM no atribuible por tenant (P1 borderline P0) — depende de D3.4 + observabilidad D3+
+
+---
+
+## Estado al cierre de esta sesión (previo)
+
 **Fecha**: 2026-06-13 (mediodía)
 **Sprint cerrado**: **D3.2 — Multi-Tenant Schema + Enforcement en TaskStore** + **Audit post-sprint con fix crítico I-1**. Activa el `tenant_id` que D3.1 dejó como columna pero sin enforcement. Interface `TaskStore` ahora requiere `tenantId` estricto (`MissingTenantIdError` si undefined). Migración idempotente agrega columna a `sessions` y `spaces`. Recovery del motor ahora itera por lista de tenants configurable.
 
