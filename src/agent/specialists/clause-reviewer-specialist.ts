@@ -32,6 +32,7 @@ import type { Specialist, SpecialistExecuteParams } from "./specialist.js";
 import type { ModelRef } from "./tier-resolver.js";
 import { Lifecycle } from "./lifecycle.js";
 import { CLAUSE_REVIEWER_AGENT_CARD } from "./agent-cards/index.js";
+import { formatSkillsForPrompt, type SkillRegistry, type SkillDiscoveryContext } from "../skills/index.js";
 
 // ============================================================
 // ClauseReviewerSpecialist
@@ -58,7 +59,10 @@ export class ClauseReviewerSpecialist implements Specialist {
   public readonly preferredModel: ModelRef = "robusto";
   public readonly lifecycle: Lifecycle;
 
-  constructor(private readonly invoker: LLMInvoker) {
+  constructor(
+    private readonly invoker: LLMInvoker,
+    public readonly skills?: SkillRegistry,
+  ) {
     this.lifecycle = new Lifecycle();
     this.lifecycle.transition("idle", "registered");
   }
@@ -68,9 +72,19 @@ export class ClauseReviewerSpecialist implements Specialist {
 
     this.lifecycle.transition("busy", `node ${node.id} starting`);
 
-    const systemPrompt = this.buildSystemPrompt();
     const userInput = resolveStateRef(state, node.input.from, node.input.default);
     const userPrompt = this.buildUserPrompt(userInput);
+
+    // D2c: construir discovery context para skills. Si el workflow declara
+    // topic/jurisdicción en node.metadata, los usamos. userMessage es el
+    // userInput como string (puede ser JSON serializado).
+    const discoveryCtx: SkillDiscoveryContext = {
+      topic: node.metadata?.topic,
+      jurisdiction: node.metadata?.jurisdiction,
+      userMessage: typeof userInput === "string" ? userInput : JSON.stringify(userInput),
+    };
+
+    const systemPrompt = this.buildSystemPrompt(discoveryCtx);
 
     const invokeParams: LLMInvokeParams = {
       model: this.preferredModel,
@@ -115,16 +129,23 @@ export class ClauseReviewerSpecialist implements Specialist {
     }
   }
 
-  protected buildSystemPrompt(): string {
-    return (
+  protected buildSystemPrompt(discoveryCtx?: SkillDiscoveryContext): string {
+    const base =
       "Sos un revisor de cláusulas contractuales. Recibís una lista de cláusulas " +
       "(cada una con un id numérico y un texto) y devolvés, para cada una, su " +
       "nivel de riesgo ('low' / 'medium' / 'high') y una razón breve (una o dos " +
       "frases) explicando por qué. Si una cláusula parece abusiva bajo principios " +
       "generales de derecho contractual (desequilibrio manifiesto, renuncia a " +
       "derechos, cláusulas penales excesivas, etc.), marcala como 'high'. Si la " +
-      "cláusula es estándar, marcala como 'low'. Para zonas grises, 'medium'."
-    );
+      "cláusula es estándar, marcala como 'low'. Para zonas grises, 'medium'.";
+
+    // D2c: inyectar skills relevantes si el registry está disponible
+    // y el caller pasó un contexto de discovery (topic, jurisdicción, mensaje).
+    if (this.skills && discoveryCtx) {
+      const skillSection = formatSkillsForPrompt(this.skills, discoveryCtx);
+      return base + skillSection;
+    }
+    return base;
   }
 
   protected buildUserPrompt(input: unknown): string {

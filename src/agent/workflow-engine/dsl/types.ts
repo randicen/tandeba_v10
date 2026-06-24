@@ -180,6 +180,23 @@ export interface LLMNode extends BaseNode {
   /** Tools disponibles para este nodo. */
   readonly tools?: readonly string[];
 
+  /**
+   * Metadata opcional del nodo. **D2c — backward-compat**:
+   * - `topic`: topic del workflow (ej: "jurisprudencia", "tributario").
+   *   Usado por los specialists para discovery de skills (ver
+   *   `AGENT_D2C_SKILLS_V1_SPEC.md` §5.2).
+   * - `jurisdiction`: código de país/región (ej: "CO"). Usado para
+   *   matchear skills con `jurisdiction` declarado.
+   *
+   * Si está presente, el specialist construye el `SkillDiscoveryContext`
+   * a partir de estos campos. Si está ausente, el specialist opera
+   * sin skills (modo backward-compat con D2b).
+   */
+  readonly metadata?: {
+    readonly topic?: string;
+    readonly jurisdiction?: string;
+  };
+
   readonly input: NodeInput;
   readonly output: NodeOutput;
 

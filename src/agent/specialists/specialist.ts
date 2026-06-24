@@ -38,6 +38,7 @@ import type {
 import type { ModelRef } from "./tier-resolver.js";
 import type { AgentCard } from "./agent-card.js";
 import type { Lifecycle } from "./lifecycle.js";
+import type { SkillRegistry } from "../skills/index.js";
 
 // ============================================================
 // Specialist interface
@@ -75,6 +76,18 @@ export interface Specialist {
    * su propio lifecycle (1 instancia por specialist, no global).
    */
   readonly lifecycle: Lifecycle;
+
+  /**
+   * Catálogo de skills v1 disponible para este specialist.
+   *
+   * **D2c — opcional, backward-compat**: si está presente, el specialist
+   * descubre las skills relevantes en cada `execute()` y las inyecta
+   * en el system prompt. Si está ausente, el specialist opera sin
+   * skills (modo actual de D2b.1/D2b.2).
+   *
+   * El motor no sabe de skills. Solo el specialist.
+   */
+  readonly skills?: SkillRegistry;
 
   /**
    * Ejecuta un nodo LLM como specialist. Retorna el outcome completo
