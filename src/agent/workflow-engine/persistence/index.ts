@@ -13,6 +13,7 @@ export { runPersistenceMigrations } from "./migrations.js";
 export { MissingTenantIdError } from "./errors.js";
 export type { AuthProvider } from "./auth-provider.js";
 export { StaticTenantProvider } from "./auth-provider.js";
+export { DbAuthProvider } from "./db-auth-provider.js";
 export type {
   WorkflowAudit,
   WorkflowAuditEvent,

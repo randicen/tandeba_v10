@@ -18,11 +18,37 @@ import { createSession, getSession, getSessions, stepSession, addMessage, update
 import { getWorkspaceFiles, syncWorkspaceFromR2, ensureFileLocal } from "./src/agent/tools.js";
 import { isInsufficientBalance, MAINTENANCE_MESSAGE, getUserMessage } from "./src/lib/llm-errors.js";
 
+// D3.4: Auth stack
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import {
+  authHandler,
+  authMiddleware,
+  AUTH_ROUTE_PATTERN,
+  runBetterAuthMigrations,
+} from "./src/lib/auth/index.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
-  await syncWorkspaceFromR2();
+  // D3.4: aplicar migraciones de Better Auth ANTES de cualquier I/O
+  // de red. Las migraciones son DB-only y forward-compat. Si fallan
+  // las logueamos pero no abortamos — el server puede seguir
+  // corriendo aunque los endpoints /api/auth/* fallen hasta que se
+  // resuelva.
+  try {
+    await runBetterAuthMigrations();
+  } catch (e) {
+    console.error("[startServer] Better Auth migrations failed:", e);
+  }
+
+  // Sync R2 — no bloquea si falla. En dev offline, no tenemos R2.
+  try {
+    await syncWorkspaceFromR2();
+  } catch (e) {
+    console.warn("[startServer] syncWorkspaceFromR2 failed (continuamos):", (e as Error).message);
+  }
 
   // Migrate orphan sessions without space_id into a default space
   try {
@@ -35,7 +61,60 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // ============================================================================
+  // D3.4: Auth stack
+  // ----------------------------------------------------------------------------
+  // Orden importa (ver AGENT_D3_4_5_DB_AUTH_SPEC.md §4.6):
+  // 1. helmet() PRIMERO — security headers aplican a TODAS las responses
+  // 2. rateLimit en /api/auth/* — antes del handler para bloquear brute force
+  // 3. authHandler en /api/auth/* — Better Auth ANTES de express.json() para
+  //    que pueda parsear los bodies de OAuth callbacks
+  // 4. express.json() — para todo lo demás
+  // 5. authMiddleware en /api/* — valida session y rechaza con 401
+  // 6. (rutas existentes)
+  // ============================================================================
+
+  // 1. Helmet — security headers globales. CSP estricta con allowlist para
+  // accounts.google.com (necesario para OAuth redirect).
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "accounts.google.com"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "accounts.google.com"],
+          frameSrc: ["accounts.google.com"],
+          // HSTS solo en prod. En dev (localhost sobre HTTP) sería ruido.
+        },
+      },
+      hsts:
+        process.env.NODE_ENV === "production"
+          ? { maxAge: 31536000, includeSubDomains: true, preload: true }
+          : false,
+    }),
+  );
+
+  // 2. Rate limit solo para /api/auth/* (sign-in, callback, sign-out).
+  // 30 requests / 5 min por IP. Configurable por env var si hace falta.
+  const authLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: parseInt(process.env.AUTH_RATE_LIMIT_MAX ?? "30", 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "RATE_LIMITED" },
+  });
+
+  // 3. Better Auth handler ANTES de express.json(). Ver docs:
+  // https://www.better-auth.com/docs/installation#mount-handler
+  app.use(AUTH_ROUTE_PATTERN, authLimiter, authHandler);
+
+  // 4. express.json() para todos los demás endpoints.
   app.use(express.json());
+
+  // 5. authMiddleware en /api/* — valida session, inyecta req.user.
+  // authMiddleware internamente skip /api/auth/* (público) y /api/health.
+  app.use("/api", authMiddleware);
   
   const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB per file
   const MAX_WORKSPACE_SIZE = 500 * 1024 * 1024; // 500MB total
@@ -549,6 +628,14 @@ async function startServer() {
   // Lista runs, detalle, exportación, estadísticas agregadas.
   const auditRouter = (await import("./src/audit/router.js")).default;
   app.use("/api/audit", auditRouter);
+
+  // D3.4: Login page estática en /login. Se sirve desde public/login.html.
+  // En dev, Vite middleware (más abajo) puede interceptar — agregamos
+  // la ruta ANTES de Vite para que sirva el HTML estático primero.
+  const publicPath = path.join(process.cwd(), "public");
+  app.use("/login", (_req, res) => {
+    res.sendFile(path.join(publicPath, "login.html"));
+  });
 
   // Vite middlewware for development
   if (process.env.NODE_ENV !== "production") {
