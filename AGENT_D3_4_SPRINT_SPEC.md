@@ -1,4 +1,12 @@
-# D3.4 — Auth Real con Better Auth (Sprint Spec)
+# D3.4 — Auth Real con Better Auth (Sprint Spec) — SUPERSEDED
+
+> ⚠️ **SUPERSEDED-BY `AGENT_D3_4_REDESIGN_SPRINT_SPEC.md` (2026-06-25).**
+>
+> Este sprint spec implementó D3.4 con el patrón **single-user-per-firm** (cada user auto-crea su propio `tenant-${UUID}`). Ese modelo NO matchea la visión SaaS multi-user-firm de Worgena (ver `AGENT_ROADMAP.md` §5.16 y `AGENTS.md` §8-14).
+>
+> El rediseño correcto está en `AGENT_D3_4_REDESIGN_SPRINT_SPEC.md`. Mismo code path para todos los users, con onboarding explícito donde el user elige "crear firma" o "unirse con invite". Anti-patrón evitado: NO auto-asumimos firm para el primer user.
+>
+> Este archivo se mantiene para historial. NO implementar desde acá.
 
 > **Sprint**: D3.4 de la dimensión 3.
 > **Spec vivo**: este documento. Se actualiza durante implementación si se descubre scope que falta.
