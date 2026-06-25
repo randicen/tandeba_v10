@@ -1,5 +1,6 @@
 import { pool } from '../lib/db.js';
 import { v4 as uuidv4 } from 'uuid';
+import { scrubSecrets } from '../lib/secret-scrubber.js';
 
 export interface StepLog {
   id?: number;            // asignado por la DB al insertar
@@ -114,12 +115,22 @@ export async function completeStepLog(
 ): Promise<void> {
   const endTime = Date.now();
   const durationMs = endTime - log.startTime;
-  const promptSentJson = promptSent !== undefined ? JSON.stringify(promptSent) : null;
-  const rawResponseJson = rawResponse !== undefined ? JSON.stringify(rawResponse) : null;
-  const summarizerPromptJson = options?.summarizerPromptSent !== undefined
-    ? JSON.stringify(options.summarizerPromptSent) : null;
-  const summarizerRawJson = options?.summarizerRawResponse !== undefined
-    ? JSON.stringify(options.summarizerRawResponse) : null;
+  // Backlog P0 #1: scrub de secretos antes de persistir. Si el LLM
+  // alucina un NIT/API key/password del cliente, NO queremos eso en DB.
+  // El scrub NO throwea (P3) — si falla, persiste el input original con
+  // un warning en stderr. Ver `src/lib/secret-scrubber.ts` para detalle.
+  const promptSentJson =
+    promptSent !== undefined ? scrubSecrets(JSON.stringify(promptSent)) : null;
+  const rawResponseJson =
+    rawResponse !== undefined ? scrubSecrets(JSON.stringify(rawResponse)) : null;
+  const summarizerPromptJson =
+    options?.summarizerPromptSent !== undefined
+      ? scrubSecrets(JSON.stringify(options.summarizerPromptSent))
+      : null;
+  const summarizerRawJson =
+    options?.summarizerRawResponse !== undefined
+      ? scrubSecrets(JSON.stringify(options.summarizerRawResponse))
+      : null;
   const optimizedCount = options?.optimizedMessagesCount ?? null;
 
   // Persistir el step + tool calls en una sola transacción.
