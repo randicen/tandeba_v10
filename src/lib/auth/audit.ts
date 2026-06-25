@@ -19,7 +19,6 @@
  * user/session.
  */
 
-import type Database from "better-sqlite3";
 import { db } from "../db.js";
 
 /**
@@ -34,6 +33,12 @@ export type AuthAuditEvent =
   | "two_factor_enabled"
   | "two_factor_disabled"
   | "two_factor_verified";
+
+/**
+ * Counter in-memory de errores de audit (NO persistido).
+ * Si el counter sube mucho, indica DB caída o schema incompatible.
+ */
+let auditErrorCount = 0;
 
 /**
  * Persiste un evento de auth a la tabla `audit_auth`.
@@ -61,13 +66,17 @@ export function logAuthEvent(params: {
       params.metadata ? JSON.stringify(params.metadata) : null,
       Date.now(),
     );
-  } catch (e) {
-    // Log a stderr pero NO throw. Audit es observabilidad.
-    console.error(
-      "[audit] failed to persist event:",
-      params.event,
-      (e as Error).message,
-    );
+  } catch {
+    // FIX B2 (audit 2026-06-25): NO loguear e.message. Podría revelar
+    // schema info ("no such column: foo") que ayuda a un atacante a
+    // mapear la DB. Solo incrementamos un counter y loggeamos el
+    // tipo de evento + count. Si el counter sube, alertar.
+    auditErrorCount += 1;
+    if (auditErrorCount % 100 === 1) {
+      console.error(
+        `[audit] persist failed x${auditErrorCount} (latest event: ${params.event})`,
+      );
+    }
   }
 }
 
@@ -77,8 +86,12 @@ export function logAuthEvent(params: {
  * al construir la instancia.
  *
  * Limitación conocida: Better Auth solo expone hooks de create/delete
- * de user/session. Para login_failed y eventos 2FA usamos el
- * middleware `auditAuthRequests` (abajo).
+ * de user/session. Para login_failed y eventos 2FA usamos wraparound
+ * de la response en server.ts (FIX M4 audit 2026-06-25).
+ *
+ * FIX m5 (audit 2026-06-25): tipo inferido de los options de Better
+ * Auth (no custom) para que matchee exactamente. Si BA cambia la
+ * signature, TypeScript detecta en compile-time.
  */
 export function auditDatabaseHooks(): NonNullable<
   Parameters<typeof import("better-auth").betterAuth>[0]["databaseHooks"]
@@ -87,10 +100,13 @@ export function auditDatabaseHooks(): NonNullable<
     user: {
       create: {
         after: async (user) => {
+          // BA's User type has many fields; we only need id + email.
+          // Cast to our minimal type.
+          const u = user as unknown as { id: string; email?: string };
           logAuthEvent({
             event: "signup",
-            userId: user.id,
-            metadata: { email: user.email },
+            userId: u.id,
+            metadata: { email: u.email ?? null },
           });
         },
       },
@@ -98,19 +114,21 @@ export function auditDatabaseHooks(): NonNullable<
     session: {
       create: {
         after: async (session) => {
+          const s = session as unknown as { id: string; userId: string };
           logAuthEvent({
             event: "login_success",
-            userId: session.userId,
-            metadata: { sessionId: session.id },
+            userId: s.userId,
+            metadata: { sessionId: s.id },
           });
         },
       },
       delete: {
         before: async (session) => {
+          const s = session as unknown as { id: string; userId: string };
           logAuthEvent({
             event: "logout",
-            userId: session.userId,
-            metadata: { sessionId: session.id },
+            userId: s.userId,
+            metadata: { sessionId: s.id },
           });
           return true; // permite el delete
         },
@@ -119,45 +137,6 @@ export function auditDatabaseHooks(): NonNullable<
   };
 }
 
-/**
- * Middleware Express que captura login_failed en /api/auth/*.
- * Better Auth no expone hook nativo para esto (su endpoints /sign-in
- * retornan error sin distinguir "user no existe" de "password
- * incorrecto" — pero el response status es 4xx, suficiente para
- * distinguir success vs failure).
- *
- * Uso en server.ts:
- * ```ts
- * app.use("/api/auth", auditAuthRequests, authHandler);
- * ```
- *
- * ⚠️ NOTA: este middleware NO se implementa en D3.5 inicial. La razón
- * es que `app.use` con middleware async + handler es complejo en
- * Express, y Better Auth tiene sus propios hooks que cubren los
- * eventos críticos (create session, delete session, create user).
- *
- * Forward-compat: si en D6 un enterprise pide audit de failed logins,
- * agregar este middleware. Por ahora, audit cubre:
- * - signup (databaseHooks.user.create.after)
- * - login_success (databaseHooks.session.create.after)
- * - logout (databaseHooks.session.delete.before)
- *
- * login_failed queda logged a stdout por Better Auth pero NO
- * persistido en audit_auth. Trade-off aceptado en MVP.
- */
-export function auditAuthRequests(
-  _req: import("express").Request,
-  _res: import("express").Response,
-  next: import("express").NextFunction,
-): void {
-  // Por ahora no-op. Ver doc arriba.
-  next();
-}
-
 // Re-export db para que otros módulos del stack auth puedan usar la
 // misma instancia sin re-importar.
 export { db } from "../db.js";
-
-// Silenciar warning de unused import (Database) — type-only re-export
-// útil para callers que quieran tipar el parámetro.
-export type { Database };

@@ -102,7 +102,16 @@ export async function authMiddleware(
     (req as Request & { user?: unknown }).user = session.user;
     next();
   } catch (e) {
-    console.error("[authMiddleware] error:", e);
+    // FIX B1 (audit 2026-06-25): loguear solo el tipo y message, NO el
+    // stack completo. `e.stack` puede contener el cookie value o el
+    // body del request si la query de Better Auth falla con params.
+    // Stack traces van a log aggregators (Datadog/Sentry) y son un
+    // vector de breach.
+    const errInfo =
+      e instanceof Error
+        ? { name: e.name, message: e.message }
+        : { name: "UnknownError", message: String(e) };
+    console.error("[authMiddleware]", JSON.stringify(errInfo));
     res.status(500).json({ error: "INTERNAL_AUTH_ERROR" });
   }
 }

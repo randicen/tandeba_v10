@@ -34,12 +34,23 @@ const SECRET_PATTERNS: ReadonlyArray<{
   readonly name: string;
   readonly pattern: RegExp;
 }> = [
-  // NIT colombiano: 9-10 dígitos con dígito de verificación, formato
-  // "123.456.789-0" o "1234567890". El guion antes del dígito verificador
-  // es opcional.
+  // NIT colombiano: 9-10 dígitos CON dígito de verificación (DV).
+  // Formatos aceptados:
+  //   - "800.123.456-7" (3.3.3-DV, persona jurídica — la más común)
+  //   - "800.123.456" (3.3.3 sin DV, raro)
+  // NO matchea (false positives evitados):
+  //   - IPs "192.168.1.1" (no hay 3-3-3, son 3 grupos)
+  //   - Version numbers "1.2.3.4" (idem)
+  //   - Fechas con dots "12.05.2024" (idem)
+  //   - Plain 10 dígitos "1234567890" — lo dejamos pasar (alto FP risk
+  //     con OTPs y account numbers). El LLM rara vez devuelve un NIT
+  //     sin formato en prompts/responses.
+  //
+  // FIX M1+M3 (audit 2026-06-25): regex estricto con DV o sin DV
+  // pero con formato 3-3-3 explícito.
   {
     name: "NIT",
-    pattern: /\b\d{1,3}(?:\.\d{3}){2,3}-?\d?\b/g,
+    pattern: /\b\d{3}\.\d{3}\.\d{3}-?\d?\b/g,
   },
   // API key estilo OpenAI (sk-xxx) — 48+ chars alfanuméricos
   {
@@ -71,10 +82,16 @@ const SECRET_PATTERNS: ReadonlyArray<{
     name: "EMAIL",
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
   },
-  // Credit card: 16 dígitos con o sin separadores
+  // Credit card: 13-19 dígitos con separadores típicos.
+  // FIX M2 (audit 2026-06-25): requerir al menos un separador
+  // (espacio o guion) entre los grupos. Sin separador, cualquier
+  // secuencia de 13-19 dígitos matchearía (OTPs, IDs, account numbers).
+  // Aún hay false positives posibles con tarjetas tipeadas con guiones
+  // cada 4 dígitos (formato común) — aceptamos ese trade-off.
+  // Forward-compat: validación Luhn (D6+ si compliance lo pide).
   {
     name: "CREDIT_CARD",
-    pattern: /\b(?:\d[ -]*?){13,19}\b/g,
+    pattern: /\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,7}\b/g,
   },
   // Phone colombiano: 10 dígitos con prefijo +57 o 3xx
   {

@@ -84,6 +84,40 @@ async function bloqueA(): Promise<void> {
     const out = scrubSecrets("Mi tarjeta es 4532-1234-5678-9010");
     assert.ok(out.includes("[REDACTED:CREDIT_CARD]"), `CC redactada (got "${out}")`);
   });
+
+  await test("A7: detecta phone colombiano (3xx-xxx-xxxx)", () => {
+    const out = scrubSecrets("Llamame al 311-555-1234 mañana");
+    assert.ok(out.includes("[REDACTED:PHONE]"), `phone redactado (got "${out}")`);
+  });
+
+  await test("A8: NIT estricto requiere formato 3.3.3(-DV)", () => {
+    // Con DV explícito (formato jurídico, el más común)
+    assert.ok(
+      scrubSecrets("NIT 800.123.456-7").includes("[REDACTED:NIT]"),
+      "NIT con puntos + DV se redacta",
+    );
+    // Sin DV (rara vez, pero válido)
+    assert.ok(
+      scrubSecrets("NIT 800.123.456").includes("[REDACTED:NIT]"),
+      "NIT 3.3.3 sin DV se redacta",
+    );
+    // NO debe redactar IPs, version numbers ni fechas
+    assert.strictEqual(
+      scrubSecrets("IP 192.168.1.1"),
+      "IP 192.168.1.1",
+      "IP NO se redacta como NIT",
+    );
+    assert.strictEqual(
+      scrubSecrets("Version 1.2.3.4"),
+      "Version 1.2.3.4",
+      "version number NO se redacta como NIT",
+    );
+    assert.strictEqual(
+      scrubSecrets("Fecha 12.05.2024"),
+      "Fecha 12.05.2024",
+      "fecha NO se redacta como NIT",
+    );
+  });
 }
 
 // ============================================================
