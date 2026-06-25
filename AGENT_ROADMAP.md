@@ -415,6 +415,101 @@ Un workflow completo con SaC usa las tres cosas en secuencia: RAG busca, batchin
 - §5.13 (Citation Grounding v2): el verificador de citas jurídicas también puede usar primitivas de este specialist para validar fuentes.
 - §6.1.D2b: cuando se implemente, esta sección es el lineamiento.
 
+### 5.16. Multi-tenant multi-user firm: un solo code path
+
+**Decisión**: Worgena es SaaS multi-tenant con **múltiples usuarios por firma** (multi-user-firm). Esto NO es Claude Cowork (un user por workspace) ni es single-user-per-firm. Es el modelo de Slack/Notion/Linear/GitHub: un user puede pertenecer a N firms, cada firm tiene N users con roles.
+
+**Razón** (alineada con PLATFORM_VISION.md §15, §13 Multi-tenancy):
+- Una firma legal tiene N abogados. Todos comparten vaults, templates, audit log, firm profile.
+- La firma es la unidad de billing. El user individual es secundario.
+- Cada user (abogado) crea su propio workspace diario (sesiones/threads) pero opera **dentro** del firm.
+
+**Tablas básicas** (NO inventar workarounds):
+```sql
+-- La firma misma
+CREATE TABLE tenants (
+  id TEXT PRIMARY KEY,                    -- 'firm-{uuid}'
+  name TEXT NOT NULL,
+  nit TEXT,                               -- NIT colombiano, opcional
+  created_at INTEGER NOT NULL,
+  created_by TEXT NOT NULL,               -- user_id del owner
+  archived_at INTEGER                     -- soft delete
+);
+
+-- Muchos users pueden pertenecer a muchas firms, con roles
+CREATE TABLE tenant_members (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+  joined_at INTEGER NOT NULL,
+  invited_by TEXT,                        -- user_id que invitó; NULL si self-onboard
+  UNIQUE(user_id, tenant_id),
+  FOREIGN KEY (user_id) REFERENCES auth_user(id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+);
+
+-- Invitaciones: tokens one-time, expirable
+CREATE TABLE tenant_invitations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  email TEXT,                             -- pre-fill para el invitado
+  role TEXT NOT NULL DEFAULT 'member',
+  token TEXT UNIQUE NOT NULL,             -- crypto.randomUUID()
+  expires_at INTEGER NOT NULL,            -- 7 días por default
+  used_at INTEGER,                        -- NULL = unused
+  used_by TEXT,                           -- user_id que aceptó
+  created_at INTEGER NOT NULL,
+  created_by TEXT NOT NULL,
+  FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+);
+```
+
+**Sesión multi-firm**:
+```ts
+// En auth_session.additionalFields (Better Auth)
+{
+  activeFirmId: string;                   // 'firm-{uuid}' o null si onboarding pendiente
+}
+```
+
+NO se guarda el firm en `auth_user`. Se guarda en la **sesión activa**. Razón: un user puede pertenecer a N firms, y la sesión es la unidad de "en qué firm estoy operando ahora". Forward-compat: cuando un user alterna entre firms via selector en la UI, solo cambia el `activeFirmId` de la sesión, no el `default_tenant_id` del user.
+
+**Onboarding flow** (mismo path para todos los users, sin branches por "primer user"):
+```
+1. User hace OAuth con Google → Better Auth crea el user (stub, sin firm).
+2. authMiddleware chequea: ¿el user tiene tenant_members?
+   - Sí → carga activeFirmId de la sesión, proceder.
+   - No → redirigir a /onboarding.
+3. /onboarding muestra DOS opciones:
+   - "Crear firma" → form con nombre (NIT opcional) → POST /api/firms → tenant_members con role='owner'
+   - "Unirse con código de invitación" → form con token → POST /api/firms/join → valida tenant_invitations, crea tenant_members con role='member'
+4. Después de onboarding: sesión tiene activeFirmId. User procede a la app.
+```
+
+**Anti-patrón explícito que NO vamos a repetir**: "el primer user auto-crea su firm, los siguientes necesitan invite". Eran DOS paths. Mal. El path correcto es UNO con onboarding explícito donde el user elige.
+
+**Razón de "mismo path"**:
+- El primer cliente (abogado solo) hace click "Crear firma" → owner.
+- El segundo cliente (abogado invitado) hace click "Unirse con invite" → member.
+- El N-ésimo cliente (multi-firm, e.g., firma con 10 abogados y el admin invita al junior) sigue el mismo flow.
+- 1M de users, 10K firms, 50 users/firm → mismo flow.
+
+**Privacidad y aislamiento**:
+- `authMiddleware` lee `req.session.activeFirmId`.
+- `DbAuthProvider.getTenantId()` retorna `activeFirmId` (no más `default_tenant_id`).
+- Si `activeFirmId` está vacío → 403 con `X-Onboarding-Required: true` header.
+- Motor recibe `tenantId` desde la sesión, no desde el body. Cero forma de mentir.
+
+**Forward-compat con D6** (multi-firm por user): un user puede pertenecer a N firms. UI muestra un selector de firm activo. Solo cambia el `activeFirmId` de la sesión, no requiere re-login.
+
+**Trade-off aceptado (forward-compat)**: por ahora, el primer user que crea una firma es el owner único. La invitación flow existe desde día 1 pero la UI de "invitar usuarios" puede ser un sub-sprint. El schema y endpoints están listos, solo falta la UI. Aceptable porque la operación del founder (crear firma + insertar manualmente el primer invite via DB o CLI) es un caso de onboarding, no operacional recurrente.
+
+**Referencias**:
+- `PLATFORM_VISION.md` §15 "Multi-tenancy"
+- `AGENT_D3_4_SPRINT_SPEC.md` (a reescribir — el spec original hizo single-user-per-firm, este cambio lo corrige)
+- AGENTS.md §8-14 (principios SaaS escalable)
+
 ## 6. Roadmap de Dimensiones
 
 | # | Dimensión | Esfuerzo | Bloquea a | Estado |
