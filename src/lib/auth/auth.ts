@@ -63,14 +63,19 @@ if (!SECRET || SECRET.length < 32) {
  *   del motor porque usa prefijo `auth_*`.
  * - `user.modelName: "auth_user"`: prefijo para evitar colisión.
  * - `user.additionalFields.default_tenant_id`: columna custom que
- *   identifica el tenant (firma) del user. Default "default" para
- *   backward-compat con tests que no setean tenantId explícito.
+ *   identifica el tenant (firma) del user. Cada user nuevo recibe un
+ *   tenant ÚNICO (UUID v4). Esto previene data leakage cross-tenant:
+ *   sin esto, dos users distintos caerían al mismo tenant "default"
+ *   y compartirían toda la data. **CRIT-1 del audit D3.4.**
+ *   En D6 (multi-tenant user pool) esto se reemplaza por un flujo de
+ *   invitación que asigna tenant_id desde un form.
  * - `socialProviders.google`: único método de auth en D3.4.
  * - `prompt: "select_account"`: siempre muestra el selector de cuenta
  *   de Google (evita que reuse la última cuenta sin querer).
- * - `mapProfileToUser`: copia `default_tenant_id` al crear el user.
- *   Hoy retorna `default` para todos los users nuevos. En D6 (multi-
- *   tenant user pool) esto cambia a leer de un form o invitación.
+ * - `mapProfileToUser`: genera un tenant_id único para cada user
+ *   nuevo vía `tenant-${crypto.randomUUID()}`. Forward-compat: si
+ *   queremos tenants descriptivos en el futuro, este hook lee el form
+ *   de invitación.
  * - `experimental.joins: false`: joins experimentales en 1.6 los
  *   dejamos off hasta que sean estables (reducir blast radius en D3.4).
  */
@@ -111,7 +116,12 @@ export const auth = betterAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
       prompt: "select_account",
       mapProfileToUser: () => ({
-        default_tenant_id: "default",
+        // FIX CRIT-1 (audit D3.4, 2026-06-24): cada user nuevo recibe un
+        // tenant_id ÚNICO, no el compartido "default". Sin este fix,
+        // dos users autenticados con Google caerían al mismo tenant y
+        // compartirían toda la data. Forward-compat con D6 (multi-tenant
+        // user pool): este hook se reemplaza por lectura de invitación.
+        default_tenant_id: `tenant-${crypto.randomUUID()}`,
       }),
     },
   },

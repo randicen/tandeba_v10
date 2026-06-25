@@ -33,14 +33,23 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   // D3.4: aplicar migraciones de Better Auth ANTES de cualquier I/O
-  // de red. Las migraciones son DB-only y forward-compat. Si fallan
-  // las logueamos pero no abortamos — el server puede seguir
-  // corriendo aunque los endpoints /api/auth/* fallen hasta que se
-  // resuelva.
+  // de red. Las migraciones son DB-only y forward-compat.
+  //
+  // FIX HIGH-1 (audit D3.4, 2026-06-24): en producción, fallar loud
+  // si las migraciones fallan — el operador debe enterarse. En dev,
+  // warn loud para no bloquear el ciclo de iteración.
   try {
     await runBetterAuthMigrations();
   } catch (e) {
-    console.error("[startServer] Better Auth migrations failed:", e);
+    if (process.env.NODE_ENV === "production") {
+      console.error("[startServer] FATAL: Better Auth migrations failed in prod:", e);
+      throw e;
+    } else {
+      console.warn(
+        "[startServer] Better Auth migrations failed (dev mode, continuing):",
+        (e as Error).message,
+      );
+    }
   }
 
   // Sync R2 — no bloquea si falla. En dev offline, no tenemos R2.
@@ -65,6 +74,7 @@ async function startServer() {
   // D3.4: Auth stack
   // ----------------------------------------------------------------------------
   // Orden importa (ver AGENT_D3_4_5_DB_AUTH_SPEC.md §4.6):
+  // 0. HTTPS enforcement (solo prod)
   // 1. helmet() PRIMERO — security headers aplican a TODAS las responses
   // 2. rateLimit en /api/auth/* — antes del handler para bloquear brute force
   // 3. authHandler en /api/auth/* — Better Auth ANTES de express.json() para
@@ -73,6 +83,24 @@ async function startServer() {
   // 5. authMiddleware en /api/* — valida session y rechaza con 401
   // 6. (rutas existentes)
   // ============================================================================
+
+  // 0. FIX HIGH-2 (audit D3.4, 2026-06-24): HTTPS enforcement en prod.
+  // Rechaza requests HTTP en producción. Detecta HTTPS vía:
+  // - req.secure (nativo Express si hay TLS termination local)
+  // - X-Forwarded-Proto (reverse proxy como Railway/Render)
+  // En dev (localhost sobre HTTP) se acepta todo.
+  app.use((req, res, next) => {
+    if (process.env.NODE_ENV !== "production") return next();
+    const forwardedProto = req.headers["x-forwarded-proto"];
+    const isHttps =
+      req.secure ||
+      (typeof forwardedProto === "string" && forwardedProto.startsWith("https"));
+    if (!isHttps) {
+      res.status(403).json({ error: "HTTPS_REQUIRED" });
+      return;
+    }
+    next();
+  });
 
   // 1. Helmet — security headers globales. CSP estricta con allowlist para
   // accounts.google.com (necesario para OAuth redirect).
