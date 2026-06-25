@@ -11,64 +11,72 @@
 ## Estado al cierre de esta sesión
 
 **Fecha**: 2026-06-24
-**Sesión**: housekeeping del working tree + decisión arquitectónica sobre reorganización de la historia git.
+**Sprint cerrado**: **D3.4 — Auth Real con Better Auth (Google OAuth)**. Cierra BACKLOG P0 #1 (spoofing cross-tenant).
 
-### Housekeeping del working tree (2026-06-24)
+### D3.4 cerrado (2026-06-24)
 
-Antes de esta sesión el working tree tenía **27 commits ahead de origin/master sin pushear**, 15 archivos modificados sin commitear, y 18 untracked — incluyendo specs de D3.x, código de D3.x (persistence dir + executor + tests), skill real, BACKLOG_P0, y 5083 archivos de `.tmp/harness-study/` (research material clonado que NO debía commitearse).
+Stack: better-auth@1.6.20 (librería, no servicio) + helmet@8 + express-rate-limit@7.
 
-**Sesión de housekeeping cerrada**: 4 commits creados y pusheados a `origin/master`:
+**Componentes entregados**:
+- `src/lib/auth/{auth,handlers,index}.ts` — instancia de Better Auth con Google provider, prefix `auth_*` en tablas, additionalField `default_tenant_id`, `runBetterAuthMigrations()` programático via `getMigrations`.
+- `src/agent/workflow-engine/persistence/db-auth-provider.ts` — implementa `AuthProvider` interface leyendo `req.user.default_tenant_id` que el middleware inyectó. Backward-compat con `StaticTenantProvider`.
+- `public/login.html` — página estática con botón "Continuar con Google".
+- `server.ts` modificado: helmet → authHandler (ANTES de express.json) → express.json → authMiddleware en /api/*. Rutas `/api/auth/*` y `/api/health` son públicas.
+- `src/lib/db.ts` — export `db` (antes privado) para compartir instancia con Better Auth.
+- `.env.example` — documenta `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`, `AUTH_RATE_LIMIT_MAX`, `NODE_ENV`.
 
-| Commit | Hash | Qué cierra |
-|---|---|---|
-| `feat(d2c)` | `7225acb` | Skills v1 (D2c) + 7 hallazgos de AUDIT_D2C (incluye MAY-2 `LLMNode.metadata`) |
-| `feat(d3)` | `099d8e7` | D3.1 (storage cross-restart) + D3.2 (multi-tenant enforcement) + D3.3 (auth stub + sweeper + audit) + audit fix I-1 (PK compuesto) |
-| `docs(d3.4-d3.5)` | `2a2891c` | Spec de auth real con Better Auth + hardening (2FA + audit_auth) — NO implementado |
-| `chore` | `15890be` | Housekeeping: HANDOFF/ROADMAP updates, BACKLOG_P0, Asesoría Steve, reel-chatgpt additions, `.gitignore` ampliado, WAL files untracked |
-
-### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
-
-`feat(d3)` (099d8e7) combina los 3 sprints cortos D3.1 + D3.2 + D3.3 en un solo commit porque **el diff de `executor.ts` (+411 líneas) mezcla cambios de los 3 sprints de forma inseparable** sin reconstruir manualmente estados intermedios (alto riesgo de commits rotos donde persistence existe sin executor que la enchufe, o viceversa).
-
-**Justificación de la decisión (Woz, 2026-06-24):**
-
-- **Costo de reorganizar**: ~30-60 min de git-level magic + re-validación de tests en cada estado intermedio. Riesgo real de corromper la historia (ya ocurrió una vez durante el housekeeping).
-- **Beneficio**: ability de `git revert` atómico por sub-sprint. Mitigación alternativa: `git revert -n <sha>` + descartar archivos específicos.
-- **Mensaje del commit**: documenta explícitamente las sub-secciones `===== D3.1 =====`, `===== D3.2 =====`, `===== D3.2 audit fix I-1 =====`, `===== D3.3 =====`. Un futuro lector que busque código de D3.2 hace `git show 099d8e7` y lee la sección.
-- **Forward-compat preservada**: si en el futuro hace falta split atómico (e.g., `git bisect` sobre regresión entre D3.1 y D3.3), se puede hacer en una branch efímera `git checkout -b chore/split-d3 099d8e7` sin tocar master.
-
-### Tests al cierre de housekeeping
-
-**354 tests pasan, 0 fallidos, 0 regresiones.** Suites verificadas:
+**Tests al cierre**: **378 tests pasan, 0 fallidos, 0 regresiones** (354 acumulados + 24 nuevos D3.4).
 
 | Suite | Tests |
 |---|---|
-| test_workflow_d2c.mts | 27 |
+| test_auth_d3_4.mts (nuevo) | 24 |
+| test_workflow_executor.mts | 54 |
 | test_workflow_d3_1.mts | 39 |
 | test_workflow_d3_2.mts | 30 |
 | test_workflow_d3_3.mts | 28 |
-| test_workflow_executor.mts | 54 |
+| test_workflow_d2c.mts | 27 |
+| test_workflow_d2b_1.mts | 16 |
+| test_workflow_d2b_2.mts | 64 |
 | test_workflow_d2a_2_3.mts | 36 |
 | test_workflow_d2a_4.mts | 18 |
 | test_workflow_d2a_5.mts | 7 |
-| test_workflow_d2b_1.mts | 16 |
-| test_workflow_d2b_2.mts | 64 |
 | test_workflow_dsl_parser.mts | 35 |
 
-tsc reporta 72 errores pre-existentes (en `parser.ts` y tests viejos con imports de tipos refactorizados) — NO introducidos por este commit.
+**Decisiones clave aplicadas**:
+- Better Auth como librería (lock-in bajo, ahorrativo desde día 1, datos del user en DB propia para compliance Habeas Data Colombia).
+- Google OAuth ONLY (no password, no magic link). Cubre 95% del mercado colombiano.
+- `tenantId` derivado de `auth_user.default_tenant_id` (no de Google claims).
+- Misma `worgena.db` con prefijo `auth_*` (no colisión con tablas D1/D2/D3).
+- Forward-compat: `getMigrations` programático (no CLI), aplica automáticamente columnas nuevas que Better Auth agregue.
 
-### Próximo sprint propuesto: **D3.4 — Auth real con Better Auth**
+**Pendiente antes de producción**:
+- Audit `woz-security-hardening` del flujo completo (CSP, cookies flags, CSRF, secret no logueado).
+- Google Cloud Console: crear OAuth client + redirect URIs.
+- `BETTER_AUTH_SECRET` real (32+ chars, `openssl rand -base64 32`).
 
-Spec ya escrita: `AGENT_D3_4_5_DB_AUTH_SPEC.md` (commiteada en `2a2891c`).
+**No-objetivos diferidos** (D3.5, D3.6+, sprints separados):
+- 2FA TOTP → D3.5
+- `audit_auth` persistente → D3.5
+- `SECURITY.md` doc → D3.5
+- Scrub secretos en step_logs → sprint separado post-D3.5 (Backlog P0 #2)
+- Cost attribution por tenant → sprint separado post-D3.5 (Backlog P0 #3)
 
-**Bloquea**: pasar a D4 (memoria 4 capas), D5 (RAG), D6 (editor de skills).
+### Próximo sprint propuesto: **D3.5 — Hardening (2FA + audit_auth + SECURITY.md)**
 
-**Orden por fundamento (regla 6b de AGENTS.md)**: D3.4 antes que Backlog P0 §1 (scrub de secretos) porque sin auth real no hay separación de tenants de usuario, y el scrub de secretos opera a nivel de step_logs que es por-tenant. Auth primero, scrub después.
+Spec ya escrita: `AGENT_D3_4_5_DB_AUTH_SPEC.md` §5 (1-2 días). Habilita el "enterprise-ready" para onboarding del primer cliente enterprise chico.
 
-**Items Backlog P0 pendientes** (`BACKLOG_P0.md`):
-1. Scrub de secretos en `step_logs` (P0) — depende de D3.4 parcialmente
-2. Auth real en motor — **D3.4 cubre esto**
-3. Costo LLM no atribuible por tenant (P1 borderline P0) — depende de D3.4 + observabilidad D3+
+**Items Backlog P0 restantes**:
+1. Scrub de secretos en `step_logs` (P0) — sprint separado
+2. Auth real en motor — ✅ **cubierto por D3.4**
+3. Costo LLM no atribuible por tenant (P1 borderline P0) — sprint separado
+
+### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
+
+`feat(d3)` (099d8e7) combina los 3 sprints cortos D3.1 + D3.2 + D3.3 en un solo commit porque **el diff de `executor.ts` (+411 líneas) mezcla cambios de los 3 sprints de forma inseparable** sin reconstruir manualmente estados intermedios. Documentado en commit `1491c43 docs(handoff): registrar housekeeping 2026-06-24 + decisión sobre reorganización`.
+
+---
+
+## Estado al cierre de esta sesión (previo)
 
 ---
 
