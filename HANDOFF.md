@@ -11,7 +11,17 @@
 ## Estado al cierre de esta sesión
 
 **Fecha**: 2026-06-25
-**Sprints cerrados en esta sesión**: **D3.4 + Audit + D3.5**. Cierra BACKLOG P0 #1 (spoofing) + D3 completo. Habilita onboarding enterprise chico (NDA, DPA, compliance básico).
+**Sprints cerrados en esta sesión**: **D3.4 + Audit + D3.5 + Scrub secretos**. Cierra BACKLOG P0 #1 (spoofing) + #2 (scrub secretos). Habilita onboarding enterprise chico (NDA, DPA, compliance básico vía SECURITY.md + scrub).
+
+### Scrub secretos (Backlog P0 #1) cerrado (2026-06-25)
+
+Cierra el último item P0 crítico del backlog. Habeas Data Colombia compliance para datos persistidos por el agente.
+
+**Componentes entregados**:
+- `src/lib/secret-scrubber.ts` (nuevo) — `scrubSecrets()` con 9 regex patterns (NIT colombiano, API keys OpenAI/Anthropic/Google/GitHub, JWT, email, credit card, phone) + entropy-based para high-entropy strings (Shannon >=4.5, length >=32). Counter in-memory por tipo. NO throwea.
+- `src/lib/entropy.ts` (nuevo) — Shannon entropy utility. Forward-compat para algoritmos más sofisticados (gzip ratio).
+- `src/agent/logger.ts` modificado — `completeStepLog()` ahora pasa `promptSentJson`, `rawResponseJson`, `summarizerPromptJson`, `summarizerRawJson` por `scrubSecrets()` antes del UPDATE en `step_logs`.
+- `test_secret_scrubber.mts` (nuevo) — 13 tests (regex patterns, entropy, zero false positives, integration + counters).
 
 ### D3.5 cerrado (2026-06-25)
 
@@ -36,11 +46,12 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 
 ### Tests al cierre
 
-**422 tests pasan, 0 fallidos, 0 regresiones.**
+**435 tests pasan, 0 fallidos, 0 regresiones** (422 acumulados + 13 nuevos scrub).
 
 | Suite | Tests |
 |---|---|
-| test_auth_d3_5.mts (nuevo) | 12 |
+| test_secret_scrubber.mts (nuevo) | 13 |
+| test_auth_d3_5.mts | 12 |
 | test_auth_d3_4.mts | 30 |
 | test_workflow_executor.mts | 54 |
 | test_workflow_d3_1.mts | 39 |
@@ -54,7 +65,6 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 | test_workflow_d2a_5.mts | 7 |
 | test_workflow_dsl_parser.mts | 35 |
 | test_policy_engine.mts (externo) | 27 |
-| Otros externos | ~0 |
 
 ### Estado de Dimensión 3
 
@@ -65,21 +75,23 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 - Audit trail persistente (D3.5)
 - SECURITY.md para enterprise (D3.5)
 
-### Próximo sprint propuesto: **Scrub de secretos en `step_logs` (BACKLOG P0 #1)**
+### Estado Backlog P0
 
-Razón por fundamento: sin auth real (D3.4) + 2FA (D3.5), el scrub por-tenant no tiene scope. Ahora que D3 está cerrado, scrub es el siguiente P0 crítico.
+**D3 + Scrub secretos cerrados**. Resta solo el item #3 (cost attribution).
+
+1. ✅ Auth real en motor — D3.4 + D3.5
+2. ✅ Scrub de secretos — `d3289dd` (2026-06-25)
+3. **Costo LLM no atribuible por tenant** (P1 borderline P0) — próximo
+
+### Próximo sprint propuesto: **Backlog P0 #3 — Cost Attribution por Tenant**
+
+Razón por fundamento: sin esto no podemos cobrar por uso ni detectar fuga de tokens. Habilita revenue model + unit economics.
 
 Spec a escribir con `woz-sprint-spec-writing` antes de codear. Alcance tentativo:
-- `SecretScrubber` configurable (regex + entropy-based)
-- Aplicar en path de escritura de `step_logs` (no en lectura — más barato)
-- Audit log de scrub (cuántos secrets filtrados por sprint, sin contenido)
-- Test de regresión: input con NIT/API key/password NO aparece en row persistido
-
-### Items Backlog P0 restantes
-
-1. ✅ Auth real en motor — **D3.4 + D3.5 cerrado**
-2. **Scrub de secretos en `step_logs`** (P0) — próximo sprint
-3. **Costo LLM no atribuible por tenant** (P1 borderline P0) — sprint separado después del scrub
+- `OpenRouterClient.executeWithTimeout` acepta contexto `{taskId, tenantId, agentCardId}`
+- Hooks al `workflow_audit` (D3.3) cableados al invoker
+- Atribución por nodo via `NodeResult.costUsd` ya existe (D2b.2) — falta cablearlo al audit
+- Test de regresión: workflow de 5 nodos genera 5 rows en `workflow_audit` con `costUsd` consistente
 
 ### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
 
