@@ -70,17 +70,7 @@ async function createTestStack(): Promise<{
     database: db,
     baseURL: "http://localhost:3000",
     secret: TEST_SECRET,
-    user: {
-      modelName: "auth_user",
-      additionalFields: {
-        default_tenant_id: {
-          type: "string",
-          required: false,
-          defaultValue: "default",
-          input: false,
-        },
-      },
-    },
+    user: { modelName: "auth_user", additionalFields: {} },
     session: { modelName: "auth_session" },
     account: { modelName: "auth_account" },
     verification: { modelName: "auth_verification" },
@@ -89,9 +79,9 @@ async function createTestStack(): Promise<{
         clientId: "x",
         clientSecret: "y",
         prompt: "select_account",
-        mapProfileToUser: () => ({
-          default_tenant_id: `tenant-${crypto.randomUUID()}`,
-        }),
+        // D3.4 redesign: mapProfileToUser retorna {}.
+        // El firm se asigna por onboarding explícito.
+        mapProfileToUser: () => ({}),
       },
     },
     trustedOrigins: ["http://localhost:3000"],
@@ -341,11 +331,12 @@ async function bloqueC(): Promise<void> {
     const stack = await createTestStack();
     try {
       // Crear un user primero (FK constraint).
+      // D3.4 redesign: user sin default_tenant_id.
       stack.db
         .prepare(
-          "INSERT INTO auth_user (id, email, emailVerified, name, default_tenant_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO auth_user (id, email, emailVerified, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .run("user-1", "u1@example.com", 1, "User 1", "default", Date.now(), Date.now());
+        .run("user-1", "u1@example.com", 1, "User 1", Date.now(), Date.now());
       // Verificamos que el schema de twoFactor.backupCodes acepta un
       // string largo (típicamente "[\"code1\",\"code2\",...]\"").
       stack.db
@@ -385,11 +376,12 @@ async function bloqueC(): Promise<void> {
     const stack = await createTestStack();
     try {
       // FK constraint: necesita user.
+      // D3.4 redesign: user sin default_tenant_id.
       stack.db
         .prepare(
-          "INSERT INTO auth_user (id, email, emailVerified, name, default_tenant_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO auth_user (id, email, emailVerified, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .run("user-2", "u2@example.com", 1, "User 2", "default", Date.now(), Date.now());
+        .run("user-2", "u2@example.com", 1, "User 2", Date.now(), Date.now());
       // Better Auth encripta el secret TOTP antes de guardarlo. El valor
       // en DB NO es base32 legible directamente.
       const encryptedSecret = "v2:encrypted:abc123def456...";

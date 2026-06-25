@@ -259,6 +259,96 @@ function initDB() {
       }
     }
 
+    // D3.4 redesign: multi-tenant multi-user firm.
+    // Tablas: tenants, tenant_members, tenant_invitations.
+    // Mismo code path para todos los users (ver AGENT_D3_4_REDESIGN_SPRINT_SPEC.md):
+    // - Primer user hace click "Crear firm" → owner
+    // - N-ésimo user hace click "Unirse con invite" → member
+    // No auto-asumimos firm para nadie.
+
+    // Tabla tenants: la firma misma
+    const tenantsExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tenants'")
+      .get();
+    if (!tenantsExists) {
+      try {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS tenants (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            nit TEXT,
+            created_at INTEGER NOT NULL,
+            created_by TEXT NOT NULL,
+            archived_at INTEGER
+          );
+        `);
+        console.log('Migration: created tenants table');
+      } catch (e: any) {
+        console.error('Migration tenants failed:', e.message);
+      }
+    }
+
+    // Tabla tenant_members: many-to-many users <-> firms, con roles
+    const tenantMembersExists = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_members'",
+      )
+      .get();
+    if (!tenantMembersExists) {
+      try {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS tenant_members (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+            joined_at INTEGER NOT NULL,
+            invited_by TEXT,
+            UNIQUE(user_id, tenant_id),
+            FOREIGN KEY (user_id) REFERENCES auth_user(id) ON DELETE CASCADE,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS tenant_members_user_id_idx ON tenant_members(user_id);
+          CREATE INDEX IF NOT EXISTS tenant_members_tenant_id_idx ON tenant_members(tenant_id);
+        `);
+        console.log('Migration: created tenant_members table');
+      } catch (e: any) {
+        console.error('Migration tenant_members failed:', e.message);
+      }
+    }
+
+    // Tabla tenant_invitations: tokens one-time, expirable
+    const tenantInvitationsExists = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_invitations'",
+      )
+      .get();
+    if (!tenantInvitationsExists) {
+      try {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS tenant_invitations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            email TEXT,
+            role TEXT NOT NULL DEFAULT 'member',
+            token TEXT UNIQUE NOT NULL,
+            expires_at INTEGER NOT NULL,
+            used_at INTEGER,
+            used_by TEXT,
+            created_at INTEGER NOT NULL,
+            created_by TEXT NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS tenant_invitations_token_idx ON tenant_invitations(token);
+          CREATE INDEX IF NOT EXISTS tenant_invitations_email_idx ON tenant_invitations(email);
+          CREATE INDEX IF NOT EXISTS tenant_invitations_tenant_id_idx ON tenant_invitations(tenant_id);
+        `);
+        console.log('Migration: created tenant_invitations table');
+      } catch (e: any) {
+        console.error('Migration tenant_invitations failed:', e.message);
+      }
+    }
+
     console.log('SQLite database ready at', DB_PATH);
   } catch (e: any) {
     console.error('Failed to initialize SQLite schema:', e.message);

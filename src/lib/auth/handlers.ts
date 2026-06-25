@@ -98,8 +98,25 @@ export async function authMiddleware(
       return;
     }
 
-    // Inyectar user en req. TypeScript no lo permite directo; usamos cast.
-    (req as Request & { user?: unknown }).user = session.user;
+    // D3.4 REDESIGN: chequea activeFirmId. Si está vacío, el user
+    // todavía no completó el onboarding. Retornamos 403 con header
+    // X-Onboarding-Required para que el frontend redirija a /onboarding.
+    const activeFirmId = (session.session as { activeFirmId?: string | null })
+      .activeFirmId;
+    if (!activeFirmId) {
+      res
+        .status(403)
+        .header("X-Onboarding-Required", "true")
+        .json({ error: "ONBOARDING_REQUIRED" });
+      return;
+    }
+
+    // Inyectar user + activeFirmId en req. TypeScript no lo permite
+    // directo; usamos cast.
+    (req as Request & { user?: unknown; activeFirmId?: string }).user =
+      session.user;
+    (req as Request & { user?: unknown; activeFirmId?: string }).activeFirmId =
+      activeFirmId;
     next();
   } catch (e) {
     // FIX B1 (audit 2026-06-25): loguear solo el tipo y message, NO el

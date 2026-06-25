@@ -32,7 +32,13 @@ export type AuthAuditEvent =
   | "signup"
   | "two_factor_enabled"
   | "two_factor_disabled"
-  | "two_factor_verified";
+  | "two_factor_verified"
+  // D3.4 redesign: eventos de multi-tenant firm membership.
+  | "firm_created"
+  | "joined_firm"
+  | "invitation_created"
+  | "invitation_accepted"
+  | "invitation_revoked";
 
 /**
  * Counter in-memory de errores de audit (NO persistido).

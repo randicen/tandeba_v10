@@ -25,6 +25,45 @@ Cierra el ÚLTIMO item P0 del backlog. Habilita revenue per-tenant + unit econom
 - `src/agent/llm/openrouter-invoker.ts` — constructor acepta `audit?: WorkflowAudit`. Después de cada `chat()` exitoso, si audit + los 3 campos están presentes, registra `recordLLMCall()`. P1: si falla el audit, NO throwea.
 - `test_cost_attribution.mts` (nuevo) — 6 tests (happy path, multi-node 5x cost, backward-compat sin audit, sin context, failure path, priority de cost source).
 
+### D3.4 redesign (multi-tenant multi-user firm) cerrado (2026-06-25)
+
+Reemplaza el modelo single-user-per-firm de D3.4 con multi-tenant multi-user real. Onboarding explícito (crear firm / unirse con invite). Mismo code path para el primer user y el millón-ésimo. NO placeholders. NO asistencia manual del founder.
+
+**Schema (Postgres-compatible)**:
+- `tenants` (id, name, nit?, created_at, created_by, archived_at) — `TEXT` PK.
+- `tenant_members` (id, user_id, tenant_id, role ENUM('owner','admin','member'), joined_at, invited_by?) — `UNIQUE(user_id, tenant_id)` + FKs ON DELETE CASCADE.
+- `tenant_invitations` (id, tenant_id, email?, role, token UNIQUE, expires_at, used_at?, used_by?, created_at, created_by) — single-use tokens, 7-day expiry.
+- **Eliminado**: `auth_user.default_tenant_id`. El `activeFirmId` ahora vive en `auth_session.additionalFields`.
+
+**Componentes entregados**:
+- `AGENT_D3_4_REDESIGN_SPRINT_SPEC.md` (nuevo, 205 líneas) — spec del rediseño.
+- `AGENT_D3_4_SPRINT_SPEC.md` (marcado SUPERSEDED) — spec vieja.
+- `AGENTS.md` §8-15 — agregadas 8 reglas SaaS escalable (mismo code path, no placeholders, onboarding explícito, multi-tenant desde día 1, casos extremos 1M users, asumir crecimiento, schema Postgres-compatible).
+- `AGENT_ROADMAP.md` §5.16 — agregada decisión multi-tenant multi-user firm.
+- `.claude/agents/wozniak.md` — restricciones 13-16 (no path de escala, no medir costo, default al más barato, cachear siempre).
+- `src/lib/db.ts` — agregadas 3 tablas + 3 índices, idempotentes.
+- `src/lib/auth/firm.ts` (nuevo, ~430 líneas) — `createFirm`, `joinFirmViaInvite`, `createInvitation`, `revokeInvitation`, `getUserFirms`, `getSingleActiveFirmId`, `listMembers`, `getFirm`, `isMemberOf`. Todas aceptan `dbInstance?` opcional (forward-compat con tests :memory: y per-tenant DB).
+- `src/lib/auth/auth.ts` — `default_tenant_id` removido de `user.additionalFields`; `activeFirmId` agregado a `session.additionalFields`; `mapProfileToUser: () => ({})` (no auto-asume firm).
+- `src/lib/auth/handlers.ts` — `authMiddleware` chequea `activeFirmId`, retorna 403 + header `X-Onboarding-Required: true` si falta.
+- `src/lib/auth/audit.ts` — 5 nuevos eventos: `firm_created`, `joined_firm`, `invitation_created`, `invitation_accepted`, `invitation_revoked`.
+- `src/agent/workflow-engine/persistence/db-auth-provider.ts` — reescrito: lee `req.activeFirmId` (no `req.user.default_tenant_id`).
+- `server.ts` — 7 endpoints nuevos: `GET /api/firms/me`, `POST /api/firms`, `POST /api/firms/join`, `POST /api/firms/:id/invitations`, `DELETE /api/firms/invitations/:id`, `GET /api/firms/:id/members`, `GET /api/firms/:id`, `POST /api/firms/auto-set-active`. Más ruta estática `/onboarding`.
+- `public/onboarding.html` (nuevo) — 2 opciones: "Crear firma" o "Unirse con código". Auto-submit a `/api/firms/auto-set-active` después de crear/unirse.
+- `test_firm_membership.mts` (nuevo) — 12 tests (schema, firm creation, invitations, onboarding, single-active-firm).
+- `test_auth_d3_4.mts` (modificado) — refactor de 30 tests al modelo nuevo (A1: `default_tenant_id` NO existe, C12/G23/G24: `activeFirmId` en session, D13/D15: `DbAuthProvider` lee de `req.activeFirmId`, H25: `mapProfileToUser` retorna `{}`).
+- `test_auth_d3_5.mts` (modificado) — refactor de 12 tests al modelo nuevo (3 sitios con `default_tenant_id` → `activeFirmId`).
+
+**Decisiones de diseño**:
+- **No `default_tenant_id` en user** — el firm vive en la sesión activa. Forward-compat con multi-firm per user (D6).
+- **Onboarding explícito de 2 opciones** — "Crear firma" o "Unirse con código". NO auto-asumimos firm. Mismo code path para el primer y el millón-ésimo user.
+- **`activeFirmId` se inyecta vía SQL directo** en `auth_session` (Better Auth no expone API para escribir en additionalFields de session). Forward-compat: cuando se exponga, swap.
+- **Tokens de invitación single-use** vía `UNIQUE` constraint en `token` + `used_at`/`used_by`.
+- **Expiración 7 días**. Forward-compat con TTL configurable por firm (D6).
+- **No assistance manual del founder** — todo por UI o API. No scripts SQL.
+- **No auto-set de activeFirmId en login** — el user elige explícitamente. Backward-compat con N>1 firms (D6 selector).
+
+**Tests al cierre**: **358 tests pasan, 0 fallidos, 0 regresiones** (12 nuevos firm_membership + 30 refactor D3.4 + 12 refactor D3.5 + resto sin cambios). tsc limpio.
+
 ### Audit fixes aplicado a commits D3.5 + scrub secretos (2026-06-25)
 
 Code review multi-axis encontró 5 issues, todos arreglados en commit `770f3b2`:
@@ -70,14 +109,15 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 
 ### Tests al cierre
 
-**346 tests pasan, 0 fallidos, 0 regresiones** (435 acumulados + 6 nuevos cost attribution — un test que se eliminó en audit fixes).
+**358 tests pasan, 0 fallidos, 0 regresiones** (346 previos + 12 nuevos firm_membership; 0 cambios en suites de workflow, 0 regresiones en D3.4/D3.5 por refactor).
 
 | Suite | Tests |
 |---|---|
-| test_cost_attribution.mts (nuevo) | 6 |
+| test_firm_membership.mts (nuevo) | 12 |
+| test_cost_attribution.mts | 6 |
 | test_secret_scrubber.mts | 15 |
-| test_auth_d3_5.mts | 12 |
-| test_auth_d3_4.mts | 30 |
+| test_auth_d3_5.mts | 12 (refactor) |
+| test_auth_d3_4.mts | 30 (refactor) |
 | test_workflow_executor.mts | 54 |
 | test_workflow_d3_1.mts | 39 |
 | test_workflow_d3_2.mts | 30 |
@@ -89,6 +129,14 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 | test_workflow_d2a_4.mts | 18 |
 | test_workflow_d2a_5.mts | 7 |
 | test_workflow_dsl_parser.mts | 35 |
+| test_workflow_dsl_schema.mts | 12 |
+| test_hitl_policy.mts | 28 |
+| test_network_policy.mts | 30 |
+| test_preprocess_html.mts | 12 |
+| test_puppeteer_args.mts | 6 |
+| test_secret_scrubber.mts | 15 |
+| test_summary_logic.mts | 12 |
+| test_apify_tracker.mts | 6 |
 | test_policy_engine.mts (externo) | 27 |
 
 ### Estado de Dimensión 3
@@ -108,18 +156,19 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 2. ✅ Scrub de secretos — `d3289dd` (2026-06-25)
 3. ✅ Costo LLM atribuible por tenant — `XXXX` (2026-06-25)
 
-### Próximo sprint propuesto: **D4 — Memoria 4 capas**
+### Próximo sprint propuesto: **D3.4-bis — Comandos `/goal` + skills cableadas al chat agent**
 
-Razón por fundamento: el motor necesita memoria de capa 4 tipos (working / episodic / semantic / procedural) para mantener contexto entre sesiones y entre workflows. Roadmap §5.1, §6.4.
+Razón por fundamento: con el modelo multi-tenant ya cerrado, el chat agent (el producto de D1 que los clientes ya usan) puede cablearse a las nuevas primitivas (firm context, skills, tools) y ganar comandos slash de uso frecuente. Las skills y tools ya están construidas — solo falta el cableado al runtime del chat agent.
 
-Hoy solo tenemos working memory (context window + `step_logs` + `episodic_memory_v2` que es un stub). Episodic, semantic y procedural están en backlog.
+**Alcance tentativo (a confirmar con el founder)**:
+- Comandos `/goal`, `/role`, `/firm`, `/plan`, `/review` en el chat agent.
+- Cablear `SkillsRegistry` al system prompt del chat (similar a como D2c lo hizo con `ClauseReviewerSpecialist`).
+- Cablear `activeFirmId` al system prompt + contexto de cada request.
+- Si quedan skills de "monitoreo" y "bóveda archivada" del feedback del usuario, incluirlas en este sprint. **NO workflows por ahora** (decisión del founder: chat + skills + tools cubre el 80% de los casos).
 
-Spec a escribir con `woz-sprint-spec-writing`. Alcance tentativo:
-- `EpisodicMemory` interface — recall por similitud (Top-K) para sesiones previas del mismo caso.
-- `SemanticMemory` interface — perfil de firma/cliente persistente por tenant.
-- `ProceduralMemory` interface — templates/checklists editables por usuario.
-- Migración SQLite (3 tablas: `episodic_v2`, `semantic`, `procedural`) con isolation por tenant.
-- Integración con specialists (recuerdos se inyectan al system prompt).
+**Forward-compat con D4**: los skills cargados vía `/skill` se persistirán en `procedural_memory` (tabla nueva en D4). Los goals via `/goal` se persisten como episodic events.
+
+**D4 (memoria 4 capas) sigue en roadmap pero después de este sprint** — el chat agent cableado es el primer producto vendible.
 
 ### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
 

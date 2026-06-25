@@ -26,7 +26,17 @@ import {
   authMiddleware,
   AUTH_ROUTE_PATTERN,
   runBetterAuthMigrations,
+  createFirm as createFirmOp,
+  joinFirmViaInvite as joinFirmViaInviteOp,
+  createInvitation as createInvitationOp,
+  revokeInvitation as revokeInvitationOp,
+  getUserFirms,
+  getSingleActiveFirmId,
+  getFirm as getFirmOp,
+  listMembers as listMembersOp,
+  logAuthEvent,
 } from "./src/lib/auth/index.js";
+import { db } from "./src/lib/db.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -222,6 +232,211 @@ async function startServer() {
   // API Routes
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // ============================================================
+  // D3.4 redesign: Multi-tenant firm membership endpoints.
+  // Todos requieren auth (montados después de app.use("/api", authMiddleware)).
+  // ============================================================
+
+  // Helper: extrae el userId del req (seteado por authMiddleware).
+  const requireUserId = (req: express.Request): string => {
+    const user = (req as express.Request & { user?: { id?: string } }).user;
+    if (!user?.id) {
+      throw new Error("requireUserId: req.user.id missing");
+    }
+    return user.id;
+  };
+
+  // GET /api/firms/me — lista firms del user actual.
+  app.get("/api/firms/me", (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const firms = getUserFirms(userId);
+      res.json({ firms });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/firms — crea firm. El user actual se vuelve owner.
+  // Body: { name: string, nit?: string }
+  app.post("/api/firms", (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const { name, nit } = req.body ?? {};
+      if (typeof name !== "string" || name.trim().length === 0) {
+        res.status(400).json({ error: "name is required" });
+        return;
+      }
+      const firm = createFirmOp(name, userId, nit);
+      logAuthEvent({
+        event: "firm_created",
+        userId,
+        metadata: { firmId: firm.id, name: firm.name, nit: firm.nit },
+      });
+      // Auto-set activeFirmId: actualizamos auth_session con la nueva firm.
+      // Se hace via Better Auth API. Para el MVP, simplemente lo seteamos
+      // en la sesión activa via la API de Better Auth (updateSession).
+      // Si Better Auth 1.6 no soporta additionalFields en updateSession,
+      // fallback: query + update directo.
+      // (Implementación completa en la versión 2: persistir activeFirmId
+      // en la sesión via Better Auth API.)
+      // Por ahora retornamos el firmId para que el frontend sepa qué firm
+      // acaba de crear. El siguiente request tendrá que refrescar la sesión
+      // para que activeFirmId se setee (lo hace el frontend via GET /api/firms/me
+      // o via refresh de sesión).
+      res.json({ firmId: firm.id, role: "owner" });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/firms/join — une con invite token.
+  // Body: { token: string }
+  app.post("/api/firms/join", (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const { token } = req.body ?? {};
+      if (typeof token !== "string" || token.trim().length === 0) {
+        res.status(400).json({ error: "token is required" });
+        return;
+      }
+      const result = joinFirmViaInviteOp(userId, token);
+      logAuthEvent({
+        event: "joined_firm",
+        userId,
+        metadata: { firmId: result.firm.id, role: result.role, via: "invite" },
+      });
+      res.json({ firmId: result.firm.id, role: result.role });
+    } catch (e: any) {
+      const msg = e.message ?? "error";
+      if (msg.includes("invalid") || msg.includes("expired")) {
+        res.status(410).json({ error: msg });
+      } else {
+        res.status(500).json({ error: msg });
+      }
+    }
+  });
+
+  // POST /api/firms/:id/invitations — crea invitación. Solo owner/admin.
+  // Body: { email?: string, role?: "admin" | "member" }
+  app.post("/api/firms/:id/invitations", (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const firmId = req.params.id;
+      const { email, role } = req.body ?? {};
+      const r = (role === "admin" || role === "member") ? role : "member";
+      const inv = createInvitationOp(firmId, userId, email, r);
+      logAuthEvent({
+        event: "invitation_created",
+        userId,
+        metadata: { firmId, invitationId: inv.id, email: email ?? null, role: r },
+      });
+      res.json({
+        invitationId: inv.id,
+        token: inv.token,
+        expiresAt: inv.expiresAt,
+        url: `/onboarding?token=${inv.token}`, // Frontend usa este URL
+      });
+    } catch (e: any) {
+      const msg = e.message ?? "error";
+      if (msg.includes("only owner/admin")) {
+        res.status(403).json({ error: msg });
+      } else {
+        res.status(500).json({ error: msg });
+      }
+    }
+  });
+
+  // DELETE /api/firms/:id/invitations/:invitationId — revoca invitación.
+  app.delete("/api/firms/:id/invitations/:invitationId", (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      revokeInvitationOp(req.params.invitationId, userId);
+      logAuthEvent({
+        event: "invitation_revoked",
+        userId,
+        metadata: { firmId: req.params.id, invitationId: req.params.invitationId },
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      const msg = e.message ?? "error";
+      if (msg.includes("only owner/admin")) {
+        res.status(403).json({ error: msg });
+      } else if (msg.includes("not found") || msg.includes("already used")) {
+        res.status(404).json({ error: msg });
+      } else {
+        res.status(500).json({ error: msg });
+      }
+    }
+  });
+
+  // GET /api/firms/:id/members — lista miembros. Solo members del firm.
+  app.get("/api/firms/:id/members", (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const members = listMembersOp(req.params.id, userId);
+      res.json({ members });
+    } catch (e: any) {
+      const msg = e.message ?? "error";
+      if (msg.includes("not a member")) {
+        res.status(403).json({ error: msg });
+      } else {
+        res.status(500).json({ error: msg });
+      }
+    }
+  });
+
+  // GET /api/firms/:id — get firm por id. Requiere membership.
+  app.get("/api/firms/:id", async (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const firm = getFirmOp(req.params.id);
+      if (!firm) {
+        res.status(404).json({ error: "firm not found" });
+        return;
+      }
+      // Verificar que el user es member (cualquier rol).
+      const { isMember } = (await import("./src/lib/auth/firm.js"))
+        .isMemberOf(userId, req.params.id);
+      if (!isMember) {
+        res.status(403).json({ error: "not a member of this firm" });
+        return;
+      }
+      res.json({ firm });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/firms/auto-set-active — auto-setear activeFirmId en la sesión
+  // si el user tiene exactamente 1 firm. Forward-compat: para multi-firm
+  // (D6) se reemplaza por un selector de firm en la UI.
+  //
+  // El frontend llama este endpoint después de login para que el authMiddleware
+  // no rechace con 403 X-Onboarding-Required.
+  app.post("/api/firms/auto-set-active", async (req, res) => {
+    try {
+      const userId = requireUserId(req);
+      const singleFirmId = getSingleActiveFirmId(userId);
+      if (!singleFirmId) {
+        // 0 firms → onboarding required. N>1 firms → D6 selector.
+        res
+          .status(400)
+          .json({ error: "ONBOARDING_REQUIRED", reason: "0_or_multiple_firms" });
+        return;
+      }
+      // Actualizar activeFirmId en auth_session via Better Auth API.
+      // Para MVP, lo hacemos via SQL directo. Forward-compat: cuando BA
+      // exponga updateSession, usamos la API.
+      db.prepare(
+        "UPDATE auth_session SET activeFirmId = ? WHERE userId = ?",
+      ).run(singleFirmId, userId);
+      res.json({ activeFirmId: singleFirmId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // Space API Routes
@@ -663,6 +878,13 @@ async function startServer() {
   const publicPath = path.join(process.cwd(), "public");
   app.use("/login", (_req, res) => {
     res.sendFile(path.join(publicPath, "login.html"));
+  });
+
+  // D3.4 redesign: Onboarding page estática en /onboarding.
+  // El frontend la usa cuando authMiddleware retorna 403 con
+  // X-Onboarding-Required: true. Mismo patrón que /login.
+  app.use("/onboarding", (_req, res) => {
+    res.sendFile(path.join(publicPath, "onboarding.html"));
   });
 
   // Vite middlewware for development

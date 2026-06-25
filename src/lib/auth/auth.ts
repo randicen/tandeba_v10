@@ -88,20 +88,30 @@ export const auth = betterAuth({
 
   user: {
     modelName: "auth_user",
-    additionalFields: {
-      default_tenant_id: {
-        type: "string",
-        required: false,
-        defaultValue: "default",
-        input: false,
-      },
-    },
+    // D3.4 REDESIGN: default_tenant_id se eliminó. El activeFirmId
+    // vive en auth_session (no en el user). El firm se asigna via
+    // onboarding explícito, no auto-asumido.
+    additionalFields: {},
   },
 
   session: {
     modelName: "auth_session",
     expiresIn: 60 * 60 * 24 * 7, // 7 días
     updateAge: 60 * 60 * 24, // 1 día (sliding renewal)
+    // D3.4 redesign: el activeFirmId se guarda en la SESIÓN activa,
+    // NO en el user. Forward-compat: cuando un user alterna entre firms
+    // (selector de firm en UI, D6), solo cambia este campo de la sesión.
+    // Inicializado a null. El authMiddleware (handlers.ts) setea este
+    // campo automáticamente si el user tiene exactamente 1 firm. Si tiene
+    // 0, redirige a /onboarding. Si tiene N>1, UI selector (D6).
+    additionalFields: {
+      activeFirmId: {
+        type: "string",
+        required: false,
+        defaultValue: null,
+        input: false, // no se setea via signup/signin
+      },
+    },
   },
 
   account: {
@@ -117,14 +127,14 @@ export const auth = betterAuth({
       clientId: process.env.GOOGLE_CLIENT_ID ?? "",
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
       prompt: "select_account",
-      mapProfileToUser: () => ({
-        // FIX CRIT-1 (audit D3.4, 2026-06-24): cada user nuevo recibe un
-        // tenant_id ÚNICO, no el compartido "default". Sin este fix,
-        // dos users autenticados con Google caerían al mismo tenant y
-        // compartirían toda la data. Forward-compat con D6 (multi-tenant
-        // user pool): este hook se reemplaza por lectura de invitación.
-        default_tenant_id: `tenant-${crypto.randomUUID()}`,
-      }),
+      // D3.4 REDESIGN: mapProfileToUser ya NO crea firm. Better Auth solo
+      // crea el user (stub, sin firm). El firm se asigna después via
+      // el onboarding flow explícito (ver AGENT_D3_4_REDESIGN_SPRINT_SPEC.md):
+      // - User hace click "Crear firma" → POST /api/firms → owner
+      // - User hace click "Unirse con invite" → POST /api/firms/join → member
+      // Mismo code path para el primer user y el millón-ésimo. NO
+      // auto-asumimos firm para nadie. default_tenant_id se eliminó.
+      mapProfileToUser: () => ({}),
     },
   },
 

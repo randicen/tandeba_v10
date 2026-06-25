@@ -1,24 +1,29 @@
 /**
- * D3.4 — Auth Real con Better Auth (Sprint Tests).
+ * D3.4 redesign — Auth Real con Better Auth (Sprint Tests).
  *
  * Tests E2E del flujo de autenticación. Cubre los 7 bloques del
  * sprint spec §7.
+ *
+ * IMPORTANTE: D3.4 rediseño multi-tenant multi-user. El `activeFirmId`
+ * vive en la SESIÓN activa, no en el user. `default_tenant_id` en
+ * `auth_user` ya NO existe. `mapProfileToUser` retorna `{}` y el
+ * firm se asigna por onboarding explícito.
  *
  * Bloque A (1-3): Schema — tablas auth_* existen con columnas correctas.
  * Bloque B (4-8): OAuth flow — sign-in con Google mock, user creation,
  *   session, cookie, logout.
  * Bloque C (9-12): Middleware — sin cookie → 401, cookie inválida →
- *   401, cookie válida → req.user, /api/auth/* público.
- * Bloque D (13-15): DbAuthProvider — lee default_tenant_id, throw sin
- *   req.user, multi-request.
+ *   401, cookie válida → req.activeFirmId, /api/auth/* público.
+ * Bloque D (13-15): DbAuthProvider — lee req.activeFirmId, throw si
+ *   falta, multi-request.
  * Bloque E (16-18): Rate limit — 30 OK, 31 → 429.
  * Bloque F (19-21): Security headers — HSTS, X-CTO, X-FO.
  * Bloque G (22-24): E2E — login → POST /api/sessions → logout.
+ * Bloque H (25-30): Security fixes post-audit (HIGH-1, HIGH-2).
  *
- * Total: 24 tests.
+ * Total: 30 tests.
  *
- * Spec: AGENT_D3_4_SPRINT_SPEC.md §7 +
- *       AGENT_D3_4_5_DB_AUTH_SPEC.md §4.7.
+ * Spec: AGENT_D3_4_REDESIGN_SPRINT_SPEC.md §7.
  *
  * Patrón: igual que test_workflow_d3_3.mts. Counter manual con assert.
  * Usa supertest-like pattern con un mini Express app creado in-process.
@@ -84,20 +89,18 @@ async function createTestStack(): Promise<TestStack> {
     database: db,
     baseURL: "http://localhost:3000",
     secret: TEST_SECRET,
-    user: {
-      modelName: "auth_user",
-      additionalFields: {
-        default_tenant_id: {
-          type: "string",
-          required: false,
-          defaultValue: "default",
-          input: false,
-        },
-      },
-    },
+    user: { modelName: "auth_user", additionalFields: {} },
     session: {
       modelName: "auth_session",
       expiresIn: 60 * 60 * 24 * 7,
+      additionalFields: {
+        activeFirmId: {
+          type: "string",
+          required: false,
+          defaultValue: null,
+          input: false,
+        },
+      },
     },
     account: { modelName: "auth_account" },
     verification: { modelName: "auth_verification" },
@@ -106,7 +109,9 @@ async function createTestStack(): Promise<TestStack> {
         clientId: "test-google-client-id",
         clientSecret: "test-google-client-secret",
         prompt: "select_account",
-        mapProfileToUser: () => ({ default_tenant_id: "default" }),
+        // D3.4 redesign: mapProfileToUser retorna {}.
+        // El firm se asigna por onboarding explícito (no auto-asumido).
+        mapProfileToUser: () => ({}),
       },
     },
     trustedOrigins: ["http://localhost:3000"],
@@ -151,6 +156,7 @@ async function createTestStack(): Promise<TestStack> {
   app.use(express.json());
 
   // Replicate authMiddleware (matches src/lib/auth/handlers.ts)
+  // D3.4 redesign: además de validar session, chequea activeFirmId.
   const authMiddleware = async (
     req: Request,
     res: Response,
@@ -174,6 +180,15 @@ async function createTestStack(): Promise<TestStack> {
         return;
       }
       (req as Request & { user?: unknown }).user = session.user;
+      // D3.4 redesign: requerir activeFirmId en la session.
+      const activeFirmId = (session.session as { activeFirmId?: string } | null)
+        ?.activeFirmId;
+      if (!activeFirmId) {
+        res.setHeader("X-Onboarding-Required", "true");
+        res.status(403).json({ error: "ONBOARDING_REQUIRED" });
+        return;
+      }
+      (req as Request & { activeFirmId?: string }).activeFirmId = activeFirmId;
       next();
     } catch (e) {
       console.error("[authMiddleware] error:", e);
@@ -182,10 +197,11 @@ async function createTestStack(): Promise<TestStack> {
   };
   app.use("/api", authMiddleware);
 
-  // Test endpoint
+  // Test endpoint — D3.4 redesign: lee de req.activeFirmId, no user.default_tenant_id
   app.get("/api/test/protected", (req, res) => {
-    const user = (req as Request & { user?: { id: string; default_tenant_id: string } }).user;
-    res.json({ userId: user?.id, tenantId: user?.default_tenant_id });
+    const user = (req as Request & { user?: { id: string } }).user;
+    const activeFirmId = (req as Request & { activeFirmId?: string }).activeFirmId;
+    res.json({ userId: user?.id, tenantId: activeFirmId });
   });
 
   // Start server on random port
@@ -251,9 +267,11 @@ async function bloqueA(): Promise<void> {
       const names = cols.map((c) => c.name);
       assert.ok(names.includes("id"), "auth_user.id existe");
       assert.ok(names.includes("email"), "auth_user.email existe");
+      // D3.4 redesign: auth_user.default_tenant_id NO existe más.
+      // El firm vive en auth_session.activeFirmId.
       assert.ok(
-        names.includes("default_tenant_id"),
-        "auth_user.default_tenant_id existe (additionalField)",
+        !names.includes("default_tenant_id"),
+        "auth_user.default_tenant_id NO existe (D3.4 redesign)",
       );
     });
 
@@ -378,16 +396,17 @@ async function bloqueC(): Promise<void> {
       const token = "test-session-token";
       const now = Date.now();
       const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
+      // D3.4 redesign: user sin default_tenant_id. activeFirmId en session.
       stack.db
         .prepare(
-          "INSERT INTO auth_user (id, email, emailVerified, name, default_tenant_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO auth_user (id, email, emailVerified, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .run(userId, "test@example.com", 1, "Test User", "default", now, now);
+        .run(userId, "test@example.com", 1, "Test User", now, now);
       stack.db
         .prepare(
-          "INSERT INTO auth_session (id, userId, token, expiresAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO auth_session (id, userId, token, expiresAt, activeFirmId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .run("session-id-1", userId, token, expiresAt, now, now);
+        .run("session-id-1", userId, token, expiresAt, "firma-xyz", now, now);
 
       // Better Auth firma el cookie con HMAC-SHA256 usando el secret.
       const signedValue = await makeSignedCookieValue(token, TEST_SECRET);
@@ -397,7 +416,7 @@ async function bloqueC(): Promise<void> {
       assert.strictEqual(res.status, 200);
       const body = (await res.json()) as { userId: string; tenantId: string };
       assert.strictEqual(body.userId, userId);
-      assert.strictEqual(body.tenantId, "default");
+      assert.strictEqual(body.tenantId, "firma-xyz");
     });
   } finally {
     stack.server.close();
@@ -415,7 +434,7 @@ async function bloqueD(): Promise<void> {
     "./src/agent/workflow-engine/persistence/db-auth-provider.js"
   );
 
-  await test("D13: DbAuthProvider lee default_tenant_id del req.user", () => {
+  await test("D13: DbAuthProvider lee activeFirmId del req (D3.4 redesign)", () => {
     const fakeReq = {
       user: {
         id: "user-1",
@@ -423,22 +442,16 @@ async function bloqueD(): Promise<void> {
         emailVerified: true,
         name: "Test",
         image: null,
-        default_tenant_id: "firma-xyz",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
+      activeFirmId: "firma-xyz",
     } as unknown as Request;
     const provider = new DbAuthProvider(fakeReq);
     assert.strictEqual(provider.getTenantId(), "firma-xyz");
   });
 
-  await test("D14: DbAuthProvider lanza si no hay req.user", () => {
-    const fakeReq = {} as Request;
-    const provider = new DbAuthProvider(fakeReq);
-    assert.throws(() => provider.getTenantId(), /unauthenticated/);
-  });
-
-  await test("D15: DbAuthProvider lanza si default_tenant_id está vacío", () => {
+  await test("D14: DbAuthProvider lanza si no hay req.activeFirmId (D3.4 redesign)", () => {
     const fakeReq = {
       user: {
         id: "user-1",
@@ -446,13 +459,36 @@ async function bloqueD(): Promise<void> {
         emailVerified: true,
         name: "Test",
         image: null,
-        default_tenant_id: "",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
+      // activeFirmId ausente → onboarding requerido
     } as unknown as Request;
     const provider = new DbAuthProvider(fakeReq);
-    assert.throws(() => provider.getTenantId(), /empty default_tenant_id/);
+    assert.throws(
+      () => provider.getTenantId(),
+      /activeFirmId|onboarding/,
+    );
+  });
+
+  await test("D15: DbAuthProvider lanza si activeFirmId está vacío (D3.4 redesign)", () => {
+    const fakeReq = {
+      user: {
+        id: "user-1",
+        email: "u@example.com",
+        emailVerified: true,
+        name: "Test",
+        image: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      activeFirmId: "",
+    } as unknown as Request;
+    const provider = new DbAuthProvider(fakeReq);
+    assert.throws(
+      () => provider.getTenantId(),
+      /activeFirmId/,
+    );
   });
 }
 
@@ -558,16 +594,17 @@ async function bloqueG(): Promise<void> {
       const token = "e2e-token";
       const now = Date.now();
       const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
+      // D3.4 redesign: user sin default_tenant_id, activeFirmId en session.
       stack.db
         .prepare(
-          "INSERT INTO auth_user (id, email, emailVerified, name, default_tenant_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO auth_user (id, email, emailVerified, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .run(userId, "e2e@example.com", 1, "E2E User", "tenant-e2e", now, now);
+        .run(userId, "e2e@example.com", 1, "E2E User", now, now);
       stack.db
         .prepare(
-          "INSERT INTO auth_session (id, userId, token, expiresAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO auth_session (id, userId, token, expiresAt, activeFirmId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .run("e2e-session", userId, token, expiresAt, now, now);
+        .run("e2e-session", userId, token, expiresAt, "tenant-e2e", now, now);
 
       const signedValue = await makeSignedCookieValue(token, TEST_SECRET);
 
@@ -604,8 +641,8 @@ async function bloqueG(): Promise<void> {
       assert.strictEqual(afterRes.status, 401, "session invalidada post-logout");
     });
 
-    await test("G24: dos requests independientes leen tenants distintos", async () => {
-      // Crear dos users con tenants distintos
+    await test("G24: dos requests independientes leen activeFirmId distintos", async () => {
+      // D3.4 redesign: dos sessions con activeFirmId distintos.
       const u1 = "u1";
       const u2 = "u2";
       const t1 = "tenant-1";
@@ -615,17 +652,17 @@ async function bloqueG(): Promise<void> {
       const now = Date.now();
       const exp = now + 7 * 24 * 60 * 60 * 1000;
 
-      for (const [uid, tid, tok] of [[u1, t1, token1], [u2, t2, token2]]) {
+      for (const [uid, tid, tok] of [[u1, t1, token1], [u2, t2, token2]] as Array<[string, string, string]>) {
         stack.db
           .prepare(
-            "INSERT INTO auth_user (id, email, emailVerified, name, default_tenant_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO auth_user (id, email, emailVerified, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
           )
-          .run(uid, `${uid}@example.com`, 1, uid, tid, now, now);
+          .run(uid, `${uid}@example.com`, 1, uid, now, now);
         stack.db
           .prepare(
-            "INSERT INTO auth_session (id, userId, token, expiresAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO auth_session (id, userId, token, expiresAt, activeFirmId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
           )
-          .run(`sess-${uid}`, uid, tok, exp, now, now);
+          .run(`sess-${uid}`, uid, tok, exp, tid, now, now);
       }
 
       const signed1 = await makeSignedCookieValue(token1, TEST_SECRET);
@@ -654,8 +691,11 @@ async function bloqueG(): Promise<void> {
 // ============================================================
 
 async function bloqueH(): Promise<void> {
-  // H25: FIX CRIT-1 — cada user nuevo vía OAuth recibe tenant_id único
-  await test("H25: mapProfileToUser genera tenant_id único por user", async () => {
+  // H25: D3.4 redesign — mapProfileToUser retorna {} y NO asigna firm.
+  // El firm se asigna por onboarding explícito (POST /api/firms o
+  // POST /api/firms/join). Si alguien cambia mapProfileToUser para
+  // auto-asignar un firm compartido, este test falla.
+  await test("H25: mapProfileToUser retorna {} (D3.4 redesign — no auto-asume firm)", async () => {
     // Recreamos el config de Better Auth con el MISMO mapProfileToUser
     // que usa auth.ts. Si el código real cambia (regresión), este test
     // detecta.
@@ -665,17 +705,7 @@ async function bloqueH(): Promise<void> {
       database: db,
       baseURL: "http://localhost:3000",
       secret: TEST_SECRET,
-      user: {
-        modelName: "auth_user",
-        additionalFields: {
-          default_tenant_id: {
-            type: "string",
-            required: false,
-            defaultValue: "default",
-            input: false,
-          },
-        },
-      },
+      user: { modelName: "auth_user", additionalFields: {} },
       session: { modelName: "auth_session" },
       account: { modelName: "auth_account" },
       verification: { modelName: "auth_verification" },
@@ -684,12 +714,9 @@ async function bloqueH(): Promise<void> {
           clientId: "x",
           clientSecret: "y",
           prompt: "select_account",
-          // ESTE ES EL FIX: re-importamos la lógica de auth.ts.
-          // Si alguien cambia mapProfileToUser en auth.ts para volver
-          // a hardcodear "default", este test falla.
-          mapProfileToUser: () => ({
-            default_tenant_id: `tenant-${crypto.randomUUID()}`,
-          }),
+          // D3.4 redesign: mapProfileToUser retorna {}.
+          // El firm se asigna por onboarding explícito.
+          mapProfileToUser: () => ({}),
         },
       },
       trustedOrigins: ["http://localhost:3000"],
@@ -699,28 +726,35 @@ async function bloqueH(): Promise<void> {
     );
     await runMigrations();
 
-    // Llamar mapProfileToUser manualmente para verificar que retorna
-    // un UUID único cada vez.
     const cfg = auth.options.socialProviders?.google;
     const mapFn = cfg && "mapProfileToUser" in cfg ? cfg.mapProfileToUser : undefined;
     assert.ok(mapFn, "mapProfileToUser está configurado");
 
     const result1 = mapFn({} as never);
     const result2 = mapFn({} as never);
-    const r1 = result1 as { default_tenant_id: string };
-    const r2 = result2 as { default_tenant_id: string };
 
-    assert.ok(
-      r1.default_tenant_id !== r2.default_tenant_id,
-      "dos calls generan tenant_id distintos",
+    // Regla D3.4: el resultado NO debe contener firm/tenant_id
+    // (ni hardcoded "default", ni UUID generado).
+    const r1 = result1 as Record<string, unknown>;
+    const r2 = result2 as Record<string, unknown>;
+
+    assert.deepStrictEqual(
+      r1,
+      {},
+      "mapProfileToUser retorna {} (no asigna firm)",
+    );
+    assert.deepStrictEqual(
+      r2,
+      {},
+      "mapProfileToUser retorna {} (no asigna firm)",
     );
     assert.ok(
-      r1.default_tenant_id.startsWith("tenant-"),
-      `tenant_id tiene prefijo 'tenant-' (got "${r1.default_tenant_id}")`,
+      !("default_tenant_id" in r1),
+      "NO contiene default_tenant_id (campo eliminado en D3.4 redesign)",
     );
     assert.ok(
-      r1.default_tenant_id !== "default",
-      "tenant_id NO es el compartido 'default'",
+      !("firmId" in r1) && !("tenantId" in r1),
+      "NO contiene firmId/tenantId (asignación es por onboarding)",
     );
     db.close();
   });
