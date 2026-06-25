@@ -520,7 +520,7 @@ Empaquetar las topic-based policies (D1) como skills con SKILL.md, catálogo ver
 
 ### 6.4. Dimensión 3 — Multi-tenancy, auth, auditoría
 
-**Status**: ✅ **D3 cerrado completo** (5 sprints cortos: D3.1, D3.2, D3.3, D3.4, D3.5). D3.4 cerrado en sesión 2026-06-24. D3.5 sigue pendiente.
+**Status**: ✅ **D3 cerrado completo** (5 sprints cortos: D3.1, D3.2, D3.3, D3.4, D3.5). D3.5 cerrado en sesión 2026-06-25. Habilita onboarding enterprise chico (NDA, DPA, compliance básico vía SECURITY.md).
 
 | Sub-item | Sprint | Status | Qué |
 |---|---|---|---|
@@ -528,9 +528,9 @@ Empaquetar las topic-based policies (D1) como skills con SKILL.md, catálogo ver
 | Multi-tenant enforcement | D3.2 | ✅ Cerrado | PK compuesto `(task_id, tenant_id)`, `MissingTenantIdError`, isolation tests. |
 | Auth stub + sweeper + audit | D3.3 | ✅ Cerrado | `AuthProvider` interface, sweeper con `last_heartbeat_at`, tabla `workflow_audit`. |
 | **Auth real Google OAuth** | **D3.4** | ✅ **Cerrado 2026-06-24** | Better Auth + Google + SQLite + Express + `DbAuthProvider` + middleware + security headers + rate limit. 24 tests E2E pasan. Cierra BACKLOG P0 #1 (spoofing cross-tenant). |
-| **Hardening (2FA + audit_auth + SECURITY.md)** | **D3.5** | 📝 **Spec escrita** | TOTP plugin de Better Auth, `audit_auth` table, `SECURITY.md` para enterprise. Pendiente implementación. |
+| **Hardening (2FA + audit_auth + SECURITY.md)** | **D3.5** | ✅ **Cerrado 2026-06-25** | Plugin `twoFactor` (TOTP RFC 6238, 8 recovery codes, opt-in), tabla `audit_auth` append-only con hook a signup/login_success/logout, `SECURITY.md` con 11 secciones (data residency, encryption, auth, authorization, audit trail, data export, incident response, vulnerability disclosure, compliance, limitaciones declaradas, contact). 12 tests E2E pasan. |
 
-**Decisión D3.4-D3.5 (2026-06-14)**: auth propio con Better Auth (no Clerk, no WorkOS, no Supabase Auth). Razón: ahorrativo desde el día 1, datos del user en TU DB (compliance habeas data Colombia sin sub-procesadores), robusto para un cliente enterprise chico, lock-in bajo (Better Auth es librería, no servicio). Spec en `AGENT_D3_4_5_DB_AUTH_SPEC.md`. **2 sprints cortos**: D3.4 = OAuth flow + middleware + tests (2-3 días) ✅, D3.5 = 2FA + audit + doc (1-2 días) pendiente.
+**Decisión D3.4-D3.5 (2026-06-14)**: auth propio con Better Auth (no Clerk, no WorkOS, no Supabase Auth). Razón: ahorrativo desde el día 1, datos del user en TU DB (compliance habeas data Colombia sin sub-procesadores), robusto para un cliente enterprise chico, lock-in bajo (Better Auth es librería, no servicio). Spec en `AGENT_D3_4_5_DB_AUTH_SPEC.md`. **2 sprints cortos**: D3.4 = OAuth flow + middleware + tests (2-3 días) ✅ 2026-06-24, D3.5 = 2FA + audit + doc (1-2 días) ✅ 2026-06-25.
 
 ---
 

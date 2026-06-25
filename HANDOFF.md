@@ -10,26 +10,38 @@
 
 ## Estado al cierre de esta sesión
 
-**Fecha**: 2026-06-24
-**Sprint cerrado**: **D3.4 — Auth Real con Better Auth (Google OAuth)**. Cierra BACKLOG P0 #1 (spoofing cross-tenant).
+**Fecha**: 2026-06-25
+**Sprints cerrados en esta sesión**: **D3.4 + Audit + D3.5**. Cierra BACKLOG P0 #1 (spoofing) + D3 completo. Habilita onboarding enterprise chico (NDA, DPA, compliance básico).
 
-### D3.4 cerrado (2026-06-24)
+### D3.5 cerrado (2026-06-25)
 
-Stack: better-auth@1.6.20 (librería, no servicio) + helmet@8 + express-rate-limit@7.
+Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`.
 
 **Componentes entregados**:
-- `src/lib/auth/{auth,handlers,index}.ts` — instancia de Better Auth con Google provider, prefix `auth_*` en tablas, additionalField `default_tenant_id`, `runBetterAuthMigrations()` programático via `getMigrations`.
-- `src/agent/workflow-engine/persistence/db-auth-provider.ts` — implementa `AuthProvider` interface leyendo `req.user.default_tenant_id` que el middleware inyectó. Backward-compat con `StaticTenantProvider`.
-- `public/login.html` — página estática con botón "Continuar con Google".
-- `server.ts` modificado: helmet → authHandler (ANTES de express.json) → express.json → authMiddleware en /api/*. Rutas `/api/auth/*` y `/api/health` son públicas.
-- `src/lib/db.ts` — export `db` (antes privado) para compartir instancia con Better Auth.
-- `.env.example` — documenta `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`, `AUTH_RATE_LIMIT_MAX`, `NODE_ENV`.
+- `src/lib/auth/auth.ts` — agregamos plugin `twoFactor` (issuer "Worgena", TOTP 6 dígitos / 30s, 8 recovery codes de 10 chars, `allowPasswordless: true` para OAuth-only). `databaseHooks` inyectados via `auditDatabaseHooks()`.
+- `src/lib/auth/audit.ts` (nuevo) — `logAuthEvent()` persiste a `audit_auth` (append-only, no bloquea flow si DB falla), `auditDatabaseHooks()` retorna hooks para signup/login_success/logout, `auditAuthRequests()` no-op (D6+).
+- `runBetterAuthMigrations()` extendido: corre Better Auth migrations (incluye `twoFactor` table) + crea `audit_auth` con 3 índices.
+- `SECURITY.md` — 11 secciones (data residency, encryption, auth, authorization, audit trail, data export, incident response, vulnerability disclosure, compliance, **limitaciones declaradas**, contact). Honesto sobre lo que NO está implementado.
+- `test_auth_d3_5.mts` — 12 tests E2E (schema audit_auth + twoFactor, eventos persistidos, plugin habilitado, schema soporta 8 codes de 10 chars, secret encrypted, SECURITY.md completo).
 
-**Tests al cierre**: **378 tests pasan, 0 fallidos, 0 regresiones** (354 acumulados + 24 nuevos D3.4).
+### D3.4 audit (2026-06-24) + 3 fixes críticos aplicados
+
+**Audit `woz-security-hardening` post-D3.4 merge** encontró 3 issues críticos/altos. Todos arreglados en commit `fe90ab7`:
+
+- **CRIT-1** (multi-tenant data leakage): `mapProfileToUser` hardcodeaba `default_tenant_id: "default"` para todos los users. **Fix**: cada user nuevo recibe `tenant-${UUID}`. Sin esto, dos users autenticados con Google caían al mismo tenant y compartían toda la data.
+- **HIGH-1** (silent migration failure): `runBetterAuthMigrations` traga errores. **Fix**: en prod throw loud; en dev warn loud.
+- **HIGH-2** (HTTPS no enforced): server confiaba en reverse proxy. **Fix**: middleware que rechaza HTTP en prod vía `req.secure || X-Forwarded-Proto: https`.
+
+**Tests nuevos (H25-H30)**: 6 tests en `test_auth_d3_4.mts` que verifican los fixes. Total D3.4 ahora 30 tests.
+
+### Tests al cierre
+
+**422 tests pasan, 0 fallidos, 0 regresiones.**
 
 | Suite | Tests |
 |---|---|
-| test_auth_d3_4.mts (nuevo) | 24 |
+| test_auth_d3_5.mts (nuevo) | 12 |
+| test_auth_d3_4.mts | 30 |
 | test_workflow_executor.mts | 54 |
 | test_workflow_d3_1.mts | 39 |
 | test_workflow_d3_2.mts | 30 |
@@ -41,38 +53,37 @@ Stack: better-auth@1.6.20 (librería, no servicio) + helmet@8 + express-rate-lim
 | test_workflow_d2a_4.mts | 18 |
 | test_workflow_d2a_5.mts | 7 |
 | test_workflow_dsl_parser.mts | 35 |
+| test_policy_engine.mts (externo) | 27 |
+| Otros externos | ~0 |
 
-**Decisiones clave aplicadas**:
-- Better Auth como librería (lock-in bajo, ahorrativo desde día 1, datos del user en DB propia para compliance Habeas Data Colombia).
-- Google OAuth ONLY (no password, no magic link). Cubre 95% del mercado colombiano.
-- `tenantId` derivado de `auth_user.default_tenant_id` (no de Google claims).
-- Misma `worgena.db` con prefijo `auth_*` (no colisión con tablas D1/D2/D3).
-- Forward-compat: `getMigrations` programático (no CLI), aplica automáticamente columnas nuevas que Better Auth agregue.
+### Estado de Dimensión 3
 
-**Pendiente antes de producción**:
-- Audit `woz-security-hardening` del flujo completo (CSP, cookies flags, CSRF, secret no logueado).
-- Google Cloud Console: crear OAuth client + redirect URIs.
-- `BETTER_AUTH_SECRET` real (32+ chars, `openssl rand -base64 32`).
+**D3 cerrado completo** (D3.1 + D3.2 + D3.3 + D3.4 + D3.5). Habilita:
+- Login con Google OAuth (D3.4)
+- Multi-tenant isolation enforced (D3.2, audit I-1 cerrado)
+- 2FA opt-in (D3.5)
+- Audit trail persistente (D3.5)
+- SECURITY.md para enterprise (D3.5)
 
-**No-objetivos diferidos** (D3.5, D3.6+, sprints separados):
-- 2FA TOTP → D3.5
-- `audit_auth` persistente → D3.5
-- `SECURITY.md` doc → D3.5
-- Scrub secretos en step_logs → sprint separado post-D3.5 (Backlog P0 #2)
-- Cost attribution por tenant → sprint separado post-D3.5 (Backlog P0 #3)
+### Próximo sprint propuesto: **Scrub de secretos en `step_logs` (BACKLOG P0 #1)**
 
-### Próximo sprint propuesto: **D3.5 — Hardening (2FA + audit_auth + SECURITY.md)**
+Razón por fundamento: sin auth real (D3.4) + 2FA (D3.5), el scrub por-tenant no tiene scope. Ahora que D3 está cerrado, scrub es el siguiente P0 crítico.
 
-Spec ya escrita: `AGENT_D3_4_5_DB_AUTH_SPEC.md` §5 (1-2 días). Habilita el "enterprise-ready" para onboarding del primer cliente enterprise chico.
+Spec a escribir con `woz-sprint-spec-writing` antes de codear. Alcance tentativo:
+- `SecretScrubber` configurable (regex + entropy-based)
+- Aplicar en path de escritura de `step_logs` (no en lectura — más barato)
+- Audit log de scrub (cuántos secrets filtrados por sprint, sin contenido)
+- Test de regresión: input con NIT/API key/password NO aparece en row persistido
 
-**Items Backlog P0 restantes**:
-1. Scrub de secretos en `step_logs` (P0) — sprint separado
-2. Auth real en motor — ✅ **cubierto por D3.4**
-3. Costo LLM no atribuible por tenant (P1 borderline P0) — sprint separado
+### Items Backlog P0 restantes
+
+1. ✅ Auth real en motor — **D3.4 + D3.5 cerrado**
+2. **Scrub de secretos en `step_logs`** (P0) — próximo sprint
+3. **Costo LLM no atribuible por tenant** (P1 borderline P0) — sprint separado después del scrub
 
 ### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
 
-`feat(d3)` (099d8e7) combina los 3 sprints cortos D3.1 + D3.2 + D3.3 en un solo commit porque **el diff de `executor.ts` (+411 líneas) mezcla cambios de los 3 sprints de forma inseparable** sin reconstruir manualmente estados intermedios. Documentado en commit `1491c43 docs(handoff): registrar housekeeping 2026-06-24 + decisión sobre reorganización`.
+`feat(d3)` (099d8e7) combina los 3 sprints cortos D3.1 + D3.2 + D3.3 en un solo commit porque **el diff de `executor.ts` (+411 líneas) mezcla cambios de los 3 sprints de forma inseparable** sin reconstruir manualmente estados intermedios. Documentado en commit `1491c43`.
 
 ---
 
