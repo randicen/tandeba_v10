@@ -26,7 +26,9 @@
  */
 
 import { betterAuth } from "better-auth";
+import { twoFactor } from "better-auth/plugins";
 import { db } from "../db.js";
+import { auditDatabaseHooks } from "./audit.js";
 
 /**
  * URL base de la app. Better Auth la usa para construir el callback URL
@@ -135,6 +137,53 @@ export const auth = betterAuth({
       generateId: () => crypto.randomUUID(),
     },
   },
+
+  /**
+   * D3.5: 2FA plugin (TOTP RFC 6238).
+   *
+   * Habilita 2FA opt-in por user. Configuración:
+   * - `issuer: "Worgena"`: nombre de la app que aparece en Google
+   *   Authenticator / Authy / 1Password.
+   * - `totpOptions.digits: 6`: código de 6 dígitos (estándar).
+   * - `totpOptions.period: 30`: ventana de 30 segundos (estándar).
+   * - `backupCodeOptions.amount: 8`: 8 recovery codes generados al
+   *   enrollment. Decisión documentada en design spec §5.5.
+   * - `backupCodeOptions.length: 10`: cada code es de 10 chars.
+   * - `allowPasswordless: true`: Worgena solo usa Google OAuth, no
+   *   passwords. Sin esto, Better Auth rechaza `enable` porque
+   *   requiere password. Spec §5.3.
+   *
+   * El plugin agrega automáticamente:
+   * - Columna `twoFactorEnabled` a auth_user
+   * - Tabla `twoFactor` con (id, userId, secret, backupCodes, verified)
+   * - Endpoints REST: /api/auth/two-factor/{enable,disable,verify-totp,...}
+   *
+   * Forward-compat: si en D3.6+ queremos forzar 2FA por tenant, este
+   * config se vuelve per-tenant via `tenantId` callback. Por ahora
+   * opt-in global.
+   */
+  plugins: [
+    twoFactor({
+      issuer: "Worgena",
+      totpOptions: {
+        digits: 6,
+        period: 30,
+      },
+      backupCodeOptions: {
+        amount: 8,
+        length: 10,
+      },
+      allowPasswordless: true,
+    }),
+  ],
+
+  /**
+   * D3.5: Hooks de audit. Persisten eventos de auth a `audit_auth`.
+   * Captura: signup, login_success, logout.
+   * No captura: login_failed (Better Auth no expone hook — ver audit.ts).
+   * No captura: eventos 2FA (D6 si enterprise los pide).
+   */
+  databaseHooks: auditDatabaseHooks(),
 });
 
 /**
@@ -164,9 +213,30 @@ export { db } from "../db.js";
  * Spec: AGENT_D3_4_5_DB_AUTH_SPEC.md §4.1 + §4.2.
  */
 export async function runBetterAuthMigrations(): Promise<void> {
+  // 1. Better Auth core + plugin migrations (auth_user, auth_session,
+  // auth_account, auth_verification, twoFactor).
   const { runMigrations } = await import("better-auth/db/migration").then(
     (m) => m.getMigrations(auth.options),
   );
   await runMigrations();
-  console.log("[Better Auth] migrations applied");
+
+  // 2. Tabla `audit_auth` — eventos de auth persistidos (D3.5).
+  // Idempotente (CREATE TABLE IF NOT EXISTS). Si falla, NO abortamos
+  // el flow de login — audit es observabilidad, no feature crítica.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_auth (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      event TEXT NOT NULL,
+      ip TEXT,
+      user_agent TEXT,
+      metadata_json TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS audit_auth_user_id_idx ON audit_auth(user_id);
+    CREATE INDEX IF NOT EXISTS audit_auth_event_idx ON audit_auth(event);
+    CREATE INDEX IF NOT EXISTS audit_auth_created_at_idx ON audit_auth(created_at);
+  `);
+
+  console.log("[Better Auth] migrations applied (core + plugins + audit_auth)");
 }

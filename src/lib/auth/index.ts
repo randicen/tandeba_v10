@@ -8,3 +8,5 @@
 
 export { auth, runBetterAuthMigrations } from "./auth.js";
 export { authHandler, authMiddleware, AUTH_ROUTE_PATTERN } from "./handlers.js";
+export { logAuthEvent, auditDatabaseHooks } from "./audit.js";
+export type { AuthAuditEvent } from "./audit.js";
