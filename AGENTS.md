@@ -57,6 +57,29 @@ El usuario siempre **elige explícitamente** qué quiere hacer. NO auto-creamos 
 
 **Nunca**: "como no tiene firm, le auto-creamos uno y lo metemos ahí".
 
+### 15. Schema Postgres-compatible desde día 1 (incluso si usamos SQLite en dev)
+Worgena desarrolla con SQLite local (Costo $0, latencia cero) pero **debe migrar a Postgres al primer cliente pagando** (ver `wozniak.md` obsesión #2: "optimización de costos sin sacrificar calidad"). Para que la migración sea 1-2 días y NO 1-2 semanas, el schema y queries deben cumplir desde día 1:
+
+- **Strings**: usar `TEXT`, NUNCA `VARCHAR(n)` (que es Postgres-specific).
+- **IDs**: usar `TEXT` (UUIDs como `crypto.randomUUID()`) o `INTEGER` (que mapea a `BIGINT` en Postgres). NUNCA `AUTOINCREMENT` (SQLite-specific).
+- **Timestamps**: usar `INTEGER` con Unix milliseconds. NUNCA `TIMESTAMP` (Postgres tiene semánticas distintas).
+- **JSON**: almacenar como `TEXT` (JSON.stringify), parsear en la app. NUNCA `JSONB` (Postgres-only).
+- **Queries**: parametrizadas (no string concat). Ya lo hacemos via `pool.query(sql, params)`.
+- **Migraciones**: idempotentes (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`). Ya lo hacemos.
+- **Sin features SQLite-specific**: `WITHOUT ROWID`, `VACUUM INTO`, `AUTOINCREMENT`, `GLOB`, `datetime()` con strings (usar `strftime` o timestamps numéricos).
+
+Si un dev rompe esta portabilidad (e.g., "uso `JSONB` porque es más rápido"), code review lo detecta. El costo de revertir `JSONB` después es alto (migración de cada row de JSON a TEXT).
+
+**Trigger para migrar de SQLite a Postgres hosted** (documentar en HANDOFF al inicio de cada sprint que toque infra):
+- [ ] Primer cliente pagando
+- [ ] Necesidad de multi-instancia (workers en paralelo, 2+ server processes)
+- [ ] Habeas Data requiere infrastructure-as-a-service
+- [ ] Volumen > 1000 LLM calls/día sostenido
+- [ ] Storage > 5GB en DB
+- [ ] Más de 1 dev trabajando en el proyecto
+
+**Esfuerzo de la migración**: 1-2 días. 80% mecánico (cambiar adapter de Better Auth, ajustar queries con diferencias de tipo), 20% testing. El schema ya es portable.
+
 ### 12. Schema multi-tenant desde el inicio
 Las tablas básicas son SIEMPRE:
 - `tenants(id, name, ...)`
