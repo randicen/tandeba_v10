@@ -64,6 +64,20 @@ Reemplaza el modelo single-user-per-firm de D3.4 con multi-tenant multi-user rea
 
 **Tests al cierre**: **358 tests pasan, 0 fallidos, 0 regresiones** (12 nuevos firm_membership + 30 refactor D3.4 + 12 refactor D3.5 + resto sin cambios). tsc limpio.
 
+### ⚠️ Forward-Compat gaps descubiertos tarde (2026-06-25)
+
+**Confesión del CTO**: cerré el D3.4 redesign multi-tenant **sin considerar monetización ni jobs system**. El founder (Jesús) lo señaló con razón. Detalle:
+
+1. **Planes + credits + billing (P0 #4 en `BACKLOG_P0.md`)** — no podemos tomar el primer cliente pagando. `cost_attribution` (P0 #3) registra uso pero NO metrea ni enforza. Un cliente con plan $10/mes puede quemar $1000 de LLM y el sistema no se entera. Implica: `plans`, `firm_subscriptions`, `credit_ledger` (append-only), endpoints `/api/billing/*`, webhook de pago, **decisión del founder sobre provider** (Stripe vs Paddle vs LemonSqueezy — Paddle es merchant of record, no requiere SAS constituida).
+
+2. **Jobs system (P0 #5 en `BACKLOG_P0.md`)** — Worgena no tiene background work. **El onboarding que acabamos de cerrar está mitad funcional**: las invitaciones se crean con token y email, pero **no hay mecanismo para ENVIAR el email** (el destinatario nunca sabe que tiene un invite). Implica: tabla `jobs` + worker loop + handlers (send_invitation_email, enforce_credit_warning, cleanup_audit, stripe_webhook). Decisión sobre Bull (Redis) vs Graphile Worker (Postgres) vs custom in-house.
+
+**Por qué se perdió**: estaba enfocado en correctness de multi-tenant (isolation, no leak, schema Postgres-compatible). Nunca pregunté "¿cómo paga el cliente?" ni "¿cómo se manda el email de invitación?". El `cost_attribution` solo registra — no enforza. AGENTS.md §11 "asumir que el producto va a crecer" lo interpreté como multi-user, no como modelo de revenue. Falla de razonamiento anotada para no repetirla.
+
+**Orden propuesto** (siguiente sprint, decisión del founder): **P0 #4 billing + P0 #5 jobs son bloqueantes** antes de tomar cualquier cliente pagando. **D3.4-bis chat `/goal`** es nice-to-have, no bloqueante. Recomiendo re-priorizar: billing + jobs primero, chat después.
+
+**Doc**: ambos items en `BACKLOG_P0.md` con scope, no-objetivos, primitivas, decisión abierta del founder.
+
 ### Audit fixes aplicado a commits D3.5 + scrub secretos (2026-06-25)
 
 Code review multi-axis encontró 5 issues, todos arreglados en commit `770f3b2`:
@@ -156,19 +170,20 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 2. ✅ Scrub de secretos — `d3289dd` (2026-06-25)
 3. ✅ Costo LLM atribuible por tenant — `XXXX` (2026-06-25)
 
-### Próximo sprint propuesto: **D3.4-bis — Comandos `/goal` + skills cableadas al chat agent**
+### Próximo sprint propuesto: **D3.5-ter Jobs (P0 #5) — BLOQUEANTE de Billing**, luego Billing, luego chat
 
-Razón por fundamento: con el modelo multi-tenant ya cerrado, el chat agent (el producto de D1 que los clientes ya usan) puede cablearse a las nuevas primitivas (firm context, skills, tools) y ganar comandos slash de uso frecuente. Las skills y tools ya están construidas — solo falta el cableado al runtime del chat agent.
+Razón por fundamento: el fundador señaló que sin billing ni jobs no podemos tomar clientes pagando. La re-priorización correcta es: **bloqueantes de revenue primero**, nice-to-have después. **Jobs sube a bloqueante de billing** porque Wompi (pasarela seleccionada) no tiene API de subscriptions — Worgena programa los cobros recurrentes con jobs.
 
-**Alcance tentativo (a confirmar con el founder)**:
-- Comandos `/goal`, `/role`, `/firm`, `/plan`, `/review` en el chat agent.
-- Cablear `SkillsRegistry` al system prompt del chat (similar a como D2c lo hizo con `ClauseReviewerSpecialist`).
-- Cablear `activeFirmId` al system prompt + contexto de cada request.
-- Si quedan skills de "monitoreo" y "bóveda archivada" del feedback del usuario, incluirlas en este sprint. **NO workflows por ahora** (decisión del founder: chat + skills + tools cubre el 80% de los casos).
+**Orden de sprints actualizado**:
+1. **D3.5-ter Jobs system** (P0 #5) — tabla `jobs` + worker loop + handlers (`send_invitation_email`, `enforce_credit_warning`, `cleanup_audit`, `stripe_webhook`). Resend seleccionada como email provider. Cierra la mitad funcional del onboarding (emails de invitaciones) Y abre el camino a billing. **Subió a BLOQUEANTE por hallazgo Steve: Wompi requiere scheduler propio**.
+2. **D3.5-bis Billing** (P0 #4) — `plans`, `firm_subscriptions`, `credit_ledger` (append-only), `credit_packs`, `wallet_purchases`, `auto_recharge_config`, LLM enforcement, endpoints `/api/billing/*`, webhook de Wompi. **Wompi seleccionada** (re-investigación Steve 2026-06-25). KYC de Wompi + sandbox ePayco en paralelo al sprint.
+3. **D3.4-bis Chat `/goal`** (nice-to-have) — cablear `SkillsRegistry` y `activeFirmId` al chat agent. Diferible hasta que billing + jobs estén cerrados.
 
-**Forward-compat con D4**: los skills cargados vía `/skill` se persistirán en `procedural_memory` (tabla nueva en D4). Los goals via `/goal` se persisten como episodic events.
+**Forward-compat con D4 (memoria 4 capas)**: las episodic events del chat se persisten via jobs (job type `record_episodic_event`). D4 los lee.
 
-**D4 (memoria 4 capas) sigue en roadmap pero después de este sprint** — el chat agent cableado es el primer producto vendible.
+**D4 sigue en roadmap** pero después de billing + jobs + chat.
+
+**Lección del 2026-06-25**: la primera delegación a Steve recomendó Paddle (mercado global) cuando Worgena es Colombia-first. El founder lo rechazó con razón. Re-investigación con scope local + nombre de candidatos reales (Wompi, PayU, Mercado Pago, ePayco) llevó a la decisión correcta. **Regla nueva en mi memoria personal**: cuando delegue research comercial a Steve, nombrá los candidatos reales del mercado local y el idioma de las fuentes (español), no asumas que Steve va a buscar en geografías correctas por su cuenta.
 
 ### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
 
