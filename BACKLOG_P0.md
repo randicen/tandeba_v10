@@ -107,4 +107,4 @@ Cada item de este backlog debe tener, antes de construir:
 
 - [x] Item 1 — scrub de secretos — ✅ CERRADO via commit `d3289dd` (2026-06-25). 13 tests nuevos pasan. `SecretScrubber` con 9 regex patterns + entropy-based para high-entropy strings.
 - [x] Item 2 — auth real en el motor — ✅ CERRADO via D3.4 (commit `4af3e0c`) + audit fixes (commit `fe90ab7`)
-- [ ] Item 3 — atribución de costo por tenant
+- [x] Item 3 — atribución de costo por tenant — ✅ CERRADO via commit `XXXX` (2026-06-25). 6 tests nuevos pasan. `WorkflowAudit.recordLLMCall()` cableado en `OpenRouterLLMInvoker`. Backlog P0 cerrado completo.

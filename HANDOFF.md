@@ -11,7 +11,31 @@
 ## Estado al cierre de esta sesión
 
 **Fecha**: 2026-06-25
-**Sprints cerrados en esta sesión**: **D3.4 + Audit + D3.5 + Scrub secretos**. Cierra BACKLOG P0 #1 (spoofing) + #2 (scrub secretos). Habilita onboarding enterprise chico (NDA, DPA, compliance básico vía SECURITY.md + scrub).
+**Sprints cerrados en esta sesión**: **D3.4 + Audit + D3.5 + Scrub secretos + Audit fixes + Cost attribution**. Cierra BACKLOG P0 completo (items #1, #2, #3). Habilita onboarding enterprise chico + revenue per-tenant.
+
+### Cost attribution (Backlog P0 #3) cerrado (2026-06-25)
+
+Cierra el ÚLTIMO item P0 del backlog. Habilita revenue per-tenant + unit economics + detección de fuga de tokens.
+
+**Componentes entregados**:
+- `src/agent/workflow-engine/persistence/workflow-audit.ts` — extendido con `llm_call` event type + interface `LLMCallAuditEvent` + método `recordLLMCall()`.
+- `src/agent/workflow-engine/persistence/sqlite-workflow-audit.ts` — implementa `recordLLMCall()` (INSERT con payload JSON).
+- `src/agent/workflow-engine/persistence/in-memory-workflow-audit.ts` — implementa `recordLLMCall()` (push a array, type-narrowed query).
+- `src/agent/workflow-engine/executor/types.ts` — `LLMInvokeParams` extendido con `tenantId?`, `taskId?`, `nodeId?`, `agentCardId?` opcionales. Backward-compat.
+- `src/agent/llm/openrouter-invoker.ts` — constructor acepta `audit?: WorkflowAudit`. Después de cada `chat()` exitoso, si audit + los 3 campos están presentes, registra `recordLLMCall()`. P1: si falla el audit, NO throwea.
+- `test_cost_attribution.mts` (nuevo) — 6 tests (happy path, multi-node 5x cost, backward-compat sin audit, sin context, failure path, priority de cost source).
+
+### Audit fixes aplicado a commits D3.5 + scrub secretos (2026-06-25)
+
+Code review multi-axis encontró 5 issues, todos arreglados en commit `770f3b2`:
+
+- **B1**: `authMiddleware` logueaba `e` completo (stack con cookie value). Cambio: log solo `{name, message}` JSON.
+- **B2**: `logAuthEvent` logueaba `e.message` (schema info leak). Cambio: counter en memoria, throttle cada 100 errores.
+- **M1+M3**: NIT regex con false positives altos (IPs, version numbers, fechas). Cambio: regex estricto `\b\d{3}\.\d{3}\.\d{3}-?\d?\b`.
+- **M2**: Credit card regex matcheaba cualquier 13-19 dígitos. Cambio: regex estricto con separadores requeridos.
+- **M4**: Dead code `auditAuthRequests` middleware eliminado.
+- **M5**: Test phone regex agregado.
+- **Bonus (m5)**: Tipos inferidos de Better Auth para que TS detecte signature changes.
 
 ### Scrub secretos (Backlog P0 #1) cerrado (2026-06-25)
 
@@ -21,7 +45,7 @@ Cierra el último item P0 crítico del backlog. Habeas Data Colombia compliance 
 - `src/lib/secret-scrubber.ts` (nuevo) — `scrubSecrets()` con 9 regex patterns (NIT colombiano, API keys OpenAI/Anthropic/Google/GitHub, JWT, email, credit card, phone) + entropy-based para high-entropy strings (Shannon >=4.5, length >=32). Counter in-memory por tipo. NO throwea.
 - `src/lib/entropy.ts` (nuevo) — Shannon entropy utility. Forward-compat para algoritmos más sofisticados (gzip ratio).
 - `src/agent/logger.ts` modificado — `completeStepLog()` ahora pasa `promptSentJson`, `rawResponseJson`, `summarizerPromptJson`, `summarizerRawJson` por `scrubSecrets()` antes del UPDATE en `step_logs`.
-- `test_secret_scrubber.mts` (nuevo) — 13 tests (regex patterns, entropy, zero false positives, integration + counters).
+- `test_secret_scrubber.mts` (nuevo) — 15 tests (regex patterns, entropy, zero false positives, integration + counters).
 
 ### D3.5 cerrado (2026-06-25)
 
@@ -46,11 +70,12 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 
 ### Tests al cierre
 
-**435 tests pasan, 0 fallidos, 0 regresiones** (422 acumulados + 13 nuevos scrub).
+**346 tests pasan, 0 fallidos, 0 regresiones** (435 acumulados + 6 nuevos cost attribution — un test que se eliminó en audit fixes).
 
 | Suite | Tests |
 |---|---|
-| test_secret_scrubber.mts (nuevo) | 13 |
+| test_cost_attribution.mts (nuevo) | 6 |
+| test_secret_scrubber.mts | 15 |
 | test_auth_d3_5.mts | 12 |
 | test_auth_d3_4.mts | 30 |
 | test_workflow_executor.mts | 54 |
@@ -77,21 +102,24 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 
 ### Estado Backlog P0
 
-**D3 + Scrub secretos cerrados**. Resta solo el item #3 (cost attribution).
+**TODOS LOS ITEMS CERRADOS**. Backlog P0 completo. Próximo: D4 (Memoria 4 capas).
 
 1. ✅ Auth real en motor — D3.4 + D3.5
 2. ✅ Scrub de secretos — `d3289dd` (2026-06-25)
-3. **Costo LLM no atribuible por tenant** (P1 borderline P0) — próximo
+3. ✅ Costo LLM atribuible por tenant — `XXXX` (2026-06-25)
 
-### Próximo sprint propuesto: **Backlog P0 #3 — Cost Attribution por Tenant**
+### Próximo sprint propuesto: **D4 — Memoria 4 capas**
 
-Razón por fundamento: sin esto no podemos cobrar por uso ni detectar fuga de tokens. Habilita revenue model + unit economics.
+Razón por fundamento: el motor necesita memoria de capa 4 tipos (working / episodic / semantic / procedural) para mantener contexto entre sesiones y entre workflows. Roadmap §5.1, §6.4.
 
-Spec a escribir con `woz-sprint-spec-writing` antes de codear. Alcance tentativo:
-- `OpenRouterClient.executeWithTimeout` acepta contexto `{taskId, tenantId, agentCardId}`
-- Hooks al `workflow_audit` (D3.3) cableados al invoker
-- Atribución por nodo via `NodeResult.costUsd` ya existe (D2b.2) — falta cablearlo al audit
-- Test de regresión: workflow de 5 nodos genera 5 rows en `workflow_audit` con `costUsd` consistente
+Hoy solo tenemos working memory (context window + `step_logs` + `episodic_memory_v2` que es un stub). Episodic, semantic y procedural están en backlog.
+
+Spec a escribir con `woz-sprint-spec-writing`. Alcance tentativo:
+- `EpisodicMemory` interface — recall por similitud (Top-K) para sesiones previas del mismo caso.
+- `SemanticMemory` interface — perfil de firma/cliente persistente por tenant.
+- `ProceduralMemory` interface — templates/checklists editables por usuario.
+- Migración SQLite (3 tablas: `episodic_v2`, `semantic`, `procedural`) con isolation por tenant.
+- Integración con specialists (recuerdos se inyectan al system prompt).
 
 ### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
 

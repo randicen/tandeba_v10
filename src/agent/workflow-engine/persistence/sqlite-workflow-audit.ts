@@ -1,5 +1,5 @@
 /**
- * Worgena Workflow Engine — SqliteWorkflowAudit (D3.3).
+ * Worgena Workflow Engine — SqliteWorkflowAudit (D3.3 + cost attribution).
  *
  * Implementación SQLite de `WorkflowAudit`. Escribe a la tabla
  * `workflow_audit` definida en `migrations.ts`.
@@ -8,13 +8,15 @@
  * Postgres: si D4+ migra, se cambia la implementación pero no la
  * interface.
  *
- * Spec: `AGENT_D3_3_AUTH_SWEEPER_AUDIT_SPEC.md` §2.4 + §3.2.
+ * Spec: `AGENT_D3_3_AUTH_SWEEPER_AUDIT_SPEC.md` §2.4 + §3.2 +
+ *       `AGENT_SPRINT_COST_ATTRIBUTION_SPEC.md` (Backlog P0 #3).
  */
 
 import type Database from "better-sqlite3";
 import type {
   WorkflowAudit,
   WorkflowAuditEvent,
+  LLMCallAuditEvent,
 } from "./workflow-audit.js";
 
 /**
@@ -47,6 +49,31 @@ export class SqliteWorkflowAudit implements WorkflowAudit {
       payload_json: event.payload
         ? JSON.stringify(event.payload)
         : null,
+      created_at: event.createdAt,
+    });
+  }
+
+  /**
+   * Backlog P0 #3: persiste un evento de cost attribution.
+   *
+   * El payload incluye todos los campos del LLMCallAuditEvent como
+   * JSON. Forward-compat: agregar campos al payload no requiere
+   * migración de schema.
+   */
+  recordLLMCall(event: LLMCallAuditEvent): void {
+    this.insertStmt.run({
+      tenant_id: event.tenantId,
+      task_id: event.taskId,
+      event_type: "llm_call",
+      payload_json: JSON.stringify({
+        nodeId: event.nodeId,
+        agentCardId: event.agentCardId ?? null,
+        model: event.model,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        costUsd: event.costUsd,
+        durationMs: event.durationMs,
+      }),
       created_at: event.createdAt,
     });
   }

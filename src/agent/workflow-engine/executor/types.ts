@@ -64,6 +64,18 @@ export interface LLMInvokeParams {
    * cancelación, puede ignorarlo — el motor tiene un timeout aparte (v2).
    */
   readonly signal?: AbortSignal;
+  /**
+   * Backlog P0 #3: contexto para cost attribution.
+   *
+   * Si están presentes, el `OpenRouterLLMInvoker` registra un evento
+   * `llm_call` en `workflow_audit` después de cada chat() exitoso.
+   * Backward-compat: opcionales. Sin ellos, NO se registra el evento
+   * (P1 del sprint spec — audit es secundario).
+   */
+  readonly tenantId?: string;
+  readonly taskId?: string;
+  readonly nodeId?: string;
+  readonly agentCardId?: string;
 }
 
 export interface LLMInvokeResult {

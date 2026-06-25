@@ -34,6 +34,7 @@ import type {
   LLMInvokeParams,
   LLMInvokeResult,
 } from "../workflow-engine/executor/types.js";
+import type { WorkflowAudit } from "../workflow-engine/persistence/workflow-audit.js";
 import type {
   ChatRequest,
   OpenRouterClient,
@@ -78,6 +79,14 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
    * falla loud.
    */
   private readonly toolCatalog?: ReadonlyMap<string, OpenAITool>;
+  /**
+   * Backlog P0 #3: audit opcional para cost attribution. Si está
+   * presente y el caller pasa `taskId`/`tenantId`/`nodeId` en
+   * `LLMInvokeParams`, se persiste un evento `llm_call` después
+   * de cada `chat()` exitoso. Si está undefined o falta alguno de
+   * los campos, NO se registra (P1 del sprint spec).
+   */
+  private readonly audit?: WorkflowAudit;
 
   constructor(
     client: OpenRouterClient,
@@ -86,12 +95,15 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
       readonly modelMap?: Readonly<Record<string, string>>;
       /** D2c+: catálogo de tools. Si se omite, workflows con tools fallan. */
       readonly toolCatalog?: ReadonlyMap<string, OpenAITool>;
+      /** Backlog P0 #3: cost attribution. Optional. */
+      readonly audit?: WorkflowAudit;
     },
   ) {
     this.client = client;
     this.catalog = options?.catalog ?? new PricingCatalog();
     this.modelMap = options?.modelMap ?? DEFAULT_MODEL_MAP;
     this.toolCatalog = options?.toolCatalog;
+    this.audit = options?.audit;
   }
 
   /**
@@ -125,7 +137,9 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
         : {}),
     };
 
+    const startTs = Date.now();
     const chatResponse = await this.client.chat(chatRequest);
+    const durationMs = Date.now() - startTs;
 
     // Costo real: usage.cost de OpenRouter pisa la estimación del catálogo.
     const costUsd = this.resolveCost(chatResponse, modelId);
@@ -134,6 +148,40 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
     // haber retornado JSON. Lo parseamos. Si falla, retornamos el string
     // raw y el motor valida con SCHEMA_VIOLATION (D2a.4 behavior).
     const output = this.parseOutput(chatResponse.output, params.outputSchema);
+
+    // Backlog P0 #3: persistir evento de cost attribution. Solo si
+    // audit está configurado Y el caller pasó los 3 campos requeridos.
+    // P1 — audit es secundario; si falla, NO throwea al caller.
+    if (
+      this.audit &&
+      params.tenantId !== undefined &&
+      params.taskId !== undefined &&
+      params.nodeId !== undefined
+    ) {
+      try {
+        this.audit.recordLLMCall({
+          tenantId: params.tenantId,
+          taskId: params.taskId,
+          nodeId: params.nodeId,
+          ...(params.agentCardId !== undefined
+            ? { agentCardId: params.agentCardId }
+            : {}),
+          model: chatResponse.modelUsed,
+          inputTokens: chatResponse.tokensUsed.input,
+          outputTokens: chatResponse.tokensUsed.output,
+          costUsd,
+          durationMs,
+          createdAt: Date.now(),
+        });
+      } catch (e) {
+        // P1: NO throwear. Log a stderr y seguir.
+        // FIX audit 2026-06-25: no loggear e.message (puede tener
+        // schema info). Solo el counter.
+        process.stderr.write(
+          `[cost-attribution] failed to record llm_call: ${(e as Error).name}\n`,
+        );
+      }
+    }
 
     return {
       output,
