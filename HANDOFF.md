@@ -170,20 +170,23 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 2. ✅ Scrub de secretos — `d3289dd` (2026-06-25)
 3. ✅ Costo LLM atribuible por tenant — `XXXX` (2026-06-25)
 
-### Próximo sprint propuesto: **D3.5-ter Jobs (P0 #5) — BLOQUEANTE de Billing**, luego Billing, luego chat
+### Próximo sprint propuesto: **D3.5-bis Billing (P0 #4) con ePayco**, en paralelo con Jobs (P0 #5)
 
-Razón por fundamento: el fundador señaló que sin billing ni jobs no podemos tomar clientes pagando. La re-priorización correcta es: **bloqueantes de revenue primero**, nice-to-have después. **Jobs sube a bloqueante de billing** porque Wompi (pasarela seleccionada) no tiene API de subscriptions — Worgena programa los cobros recurrentes con jobs.
+Razón por fundamento: el fundador señaló que sin billing ni jobs no podemos tomar clientes pagando. **Con ePayco, Jobs deja de ser bloqueante de Billing** (ePayco tiene subscriptions nativas con dunning). Billing puede arrancar ya, Jobs puede correr en paralelo.
 
 **Orden de sprints actualizado**:
-1. **D3.5-ter Jobs system** (P0 #5) — tabla `jobs` + worker loop + handlers (`send_invitation_email`, `enforce_credit_warning`, `cleanup_audit`, `stripe_webhook`). Resend seleccionada como email provider. Cierra la mitad funcional del onboarding (emails de invitaciones) Y abre el camino a billing. **Subió a BLOQUEANTE por hallazgo Steve: Wompi requiere scheduler propio**.
-2. **D3.5-bis Billing** (P0 #4) — `plans`, `firm_subscriptions`, `credit_ledger` (append-only), `credit_packs`, `wallet_purchases`, `auto_recharge_config`, LLM enforcement, endpoints `/api/billing/*`, webhook de Wompi. **Wompi seleccionada** (re-investigación Steve 2026-06-25). KYC de Wompi + sandbox ePayco en paralelo al sprint.
+1. **D3.5-bis Billing** (P0 #4) — `plans`, `firm_subscriptions`, `credit_ledger` (append-only), `credit_packs`, `wallet_purchases`, `auto_recharge_config`, LLM enforcement, endpoints `/api/billing/*`, webhook de ePayco. **ePayco seleccionada** (founder 2026-06-25 — simplicidad > fees). Spec primero, código después.
+2. **D3.5-ter Jobs system** (P0 #5) — tabla `jobs` + worker loop + handlers (`send_invitation_email`, `enforce_credit_warning`, `cleanup_audit`). Resend seleccionada como email provider. Cierra la mitad funcional del onboarding (emails de invitaciones). Puede arrancar en paralelo a billing.
 3. **D3.4-bis Chat `/goal`** (nice-to-have) — cablear `SkillsRegistry` y `activeFirmId` al chat agent. Diferible hasta que billing + jobs estén cerrados.
 
 **Forward-compat con D4 (memoria 4 capas)**: las episodic events del chat se persisten via jobs (job type `record_episodic_event`). D4 los lee.
 
 **D4 sigue en roadmap** pero después de billing + jobs + chat.
 
-**Lección del 2026-06-25**: la primera delegación a Steve recomendó Paddle (mercado global) cuando Worgena es Colombia-first. El founder lo rechazó con razón. Re-investigación con scope local + nombre de candidatos reales (Wompi, PayU, Mercado Pago, ePayco) llevó a la decisión correcta. **Regla nueva en mi memoria personal**: cuando delegue research comercial a Steve, nombrá los candidatos reales del mercado local y el idioma de las fuentes (español), no asumas que Steve va a buscar en geografías correctas por su cuenta.
+**Lecciones del 2026-06-25**:
+1. **Geografía primero**: la primera delegación a Steve asumió mercado global y recomendó Paddle. Worgena es Colombia-first. Lección: cuando delegue research comercial, nombrar candidatos del mercado local + idioma de fuentes (español).
+2. **Simplicidad > fees**: la segunda delegación a Steve recomendó Wompi por fee más bajo, pero eso requería jobs system completo como bloqueante. ePayco con subscriptions nativas = -1 sprint de código. La diferencia de fees (~$90 USD/año por cada 100 clientes) no se compara con el costo de 1 sprint. **Heurística CTO: "¿cuánto código nos ahorramos vs cuánto fee nos cuesta?"**.
+3. **Path de deliverables**: las asesorías de Steve van en `Asesoría Steve/` del workspace, NO en `~/.mavis/plans/`. Convención `YYYY-MM-DD_<tema>.md`.
 
 ### Decisión: NO reorganizar `feat(d3)` en 3 commits atómicos
 

@@ -206,106 +206,89 @@ D3.4 redesign sin considerar monetización):
 - Forward-compat con **jobs system** (P0 #5): los webhooks
   encolan un job para no bloquear el response HTTP.
 
-### 4.5 Decisión de provider de pagos (Steve re-investigación 2026-06-25)
+### 4.5 Decisión de provider de pagos (Steve re-investigación 2026-06-25 → fundador corrige a ePayco 2026-06-25)
 
-**Recomendación**: **Wompi** (de Bancolombia), plan Avanzado
-Agregador, 2.65% + $700 COP flat por transacción exitosa (todos
-los métodos: PSE, Nequi, Daviplata, tarjetas, Botón Bancolombia).
+**Recomendación final**: **ePayco** (de Davivienda), plan
+Suscripciones nativas. Razones:
 
-**Por qué Wompi > Mercado Pago > ePayco > PayU > Bold > PlacetoPay para Worgena**:
+1. **Subscriptions nativas con dunning automatizado**. ePayco
+   maneja la recurrencia server-side: tokeniza la tarjeta del
+   cliente, agenda el cobro mensual, reintenta con backoff si
+   falla, manda emails de recovery. Worgena solo recibe webhooks
+   y escribe en `credit_ledger`. **vs Wompi: Worgena tendría que
+   programar el scheduler, dunning, manejo de card-on-file,
+   edge cases de 3DS — ~1.5 sprints de código**.
 
-1. **Cubre los 5 métodos de pago B2B colombianos en una integración**.
-   PSE, Nequi, Daviplata, tarjetas Visa/MC/Amex, Botón Bancolombia.
-   ePayco cubre 4 de 5 (sin Botón Bancolombia). PayU cubre 4 de 5
-   (Daviplata no confirmado). Mercado Pago cubre los principales
-   pero con fees opacos. **Wompi gana en cobertura local.**
+2. **Fee 2.64% promo 3 meses / 2.99% + $900 COP post-promo** es
+   ~1% efectivo más caro que Wompi. Sobre 100 clientes × $30K COP/mes
+   × 12 meses = ~$362K COP/año (~$90 USD). **No es material a
+   nuestra escala**. La diferencia de fees se la come 1 sprint
+   de dev en complejidad.
 
-2. **Tarifa plana más baja del grupo local**. 2.65% + $700 COP
-   (todos los métodos, sin mínimos, sin escalonado). ePayco tiene
-   2.64% en promo 3 meses, después sube a 2.99% + $900. **PayU
-   cobra mínimo PSE $9,900 que destruye 30-50% del ingreso del
-   primer mes** de un plan COP $20-30K. Wompi no tiene ese mínimo.
+3. **Persona natural con RUT es suficiente para arrancar**. ePayco
+   permite registro a persona natural, sin necesidad de SAS.
+   Time-to-first-paying-customer: 1-2 semanas.
 
-3. **Persona natural con RUT es suficiente para arrancar**. Worgena
-   NO necesita SAS para tomar el primer cliente pagando. Wompi
-   permite registro a persona natural con RUT o cédula + cuenta
-   Bancolombia/Nequi +30 días. **Time-to-first-paying-customer:
-   1-2 semanas** (vs 3-6 meses con Stripe + Atlas).
+4. **Davivienda** (banco top-3 colombiano) = mismo peso que
+   Bancolombia para objeciones de procurement B2B jurídico.
 
-4. **Tokenización + REST API + español encaja 1:1 con el stack
-   Worgena**. Worgena ya tiene `OpenRouterLLMInvoker` como cliente
-   HTTP custom en TypeScript. Mismo patrón para `WompiClient`.
-   Webhooks firmados con `events_secret`, IP allowlist, retry
-   documentado. No hay SDK Node oficial pero tampoco dependencia
-   comunitaria frágil.
+5. **REST API + docs en español + webhooks firmados**. Encaja
+   con stack TypeScript existente.
 
-5. **Respaldo Bancolombia = confianza para cliente B2B jurídico**.
-   Cuando un bufete junior le pregunta al socio senior "le voy a
-   dar la tarjeta de la firma a un proveedor SaaS", el socio
-   pregunta "¿quién procesa el pago?". Si la respuesta es "Wompi,
-   que es de Bancolombia", se acaba la objeción. **Cierra objeciones
-   de procurement en venta enterprise.**
+**Trade-offs aceptados**:
 
-**Restricciones críticas que Worgena debe aceptar (no son blockers)**:
+- **Sin Botón Bancolombia exclusivo** (ePayco cubre PSE, Nequi,
+  tarjetas; confirmar Daviplata con sandbox).
+- **Payout manual request** (no next-day como Wompi). Aceptable
+  para v1.
+- **1% más de fee efectivo vs Wompi**. No material.
 
-- **Wompi NO tiene API REST de "subscriptions"** tipo Stripe.
-  La recurrencia se hace con tokenización + cobros manuales desde
-  el backend de Worgena. **El `jobs` system de P0 #5 deja de ser
-  nice-to-have y se vuelve BLOQUEANTE** del sprint de billing.
-  Sin jobs, Wompi no funciona para SaaS con suscripción.
+**Jobs deja de ser BLOQUEANTE de Billing**: con ePayco, el
+sprint de billing puede arrancar sin esperar al jobs system.
+Jobs (P0 #5) sigue siendo P0 pero por OTRAS razones: emails de
+invitación (D3.4 rediseño está mitad funcional sin esto),
+cleanup, credit warnings, webhooks.
 
-- **Wompi NO emite factura electrónica DIAN**. Cuando Worgena sea
-  SAS, hay que cablear un operador autorizado (Factus, Lemp,
-  EDICOM, Siigo, Alegra, Datium). Sprint adicional post-SAS,
-  no bloqueante para v1.
+**Reorden backlog**:
+1. **Billing (P0 #4) con ePayco** — puede arrancar YA.
+2. **Jobs system (P0 #5)** — en paralelo o después de billing.
+3. **Chat /goal (D3.4-bis)** — nice-to-have, último.
 
-- **Cobertura LatAm limitada a CO/PA/SV**. Si la expansión LatAm
-  llega en <12 meses, hay que sumar PayU o Mercado Pago como
-  segunda pasarela. **Documentar en HANDOFF cuando se tome la
-  decisión de expansión.**
+**Si en el futuro el volumen crece** (>$5K USD MRR o expansión
+LatAm), reevaluar agregar Wompi como segunda opción para el
+sub-segmento que prefiera Botón Bancolombia o pagos diarios.
+**No es bloqueante para v1**.
 
-**Descartados explícitamente con razón**:
+**Descartados con razón** (mantener el registro):
 
 - **Paddle / LemonSqueezy**: NO soportan métodos de pago
   colombianos. El cliente no puede pagar.
 - **Stripe Colombia como v1**: requiere SAS constituida (3-6
-  meses), fees más altos (3.9% + $800 vs 2.65% + $700 Wompi).
-  Revaluar post-SAS.
-- **PayU LatAm**: fee mínimo PSE $9,900 destruye margen en
-  planes pequeños.
-- **Bold**: NO tiene API de pagos recurrentes ("estamos
-  trabajando para que más adelante podamos contar con APIs
-  independientes para pagos recurrentes y membresías").
-  Descartado por deal-breaker.
-- **PlacetoPay**: sin SDK Node oficial, tarifa más alta,
-  enfoque enterprise.
+  meses), fees más altos. Revaluar post-SAS.
+- **Wompi** como v1: scheduler propio requiere jobs system
+  completo antes de billing. Costo de implementación > ahorro
+  en fees. Reevaluar post-v1 si volumen lo justifica.
+- **PayU LatAm**: fee mínimo PSE $9,900 destruye margen.
+- **Bold**: NO tiene API de pagos recurrentes (deal-breaker).
+- **PlacetoPay**: sin SDK Node oficial, tarifa más alta.
+- **Mercado Pago Colombia**: fees no públicos para CO, bloqueante
+  de decisión.
 
-**Mercado Pago condicional**: el fee Colombia NO es público
-(solo se publica fee Argentina 6.29%). Steve recomienda abrir
-sandbox MP CO en paralelo y validar fee antes de cerrar la
-decisión final. Si MP resulta <2.5% con dunning, sube al #1.
-Por ahora: Wompi gana por transparencia de pricing.
-
-**Riesgo + mitigación**: si Wompi rechaza a Worgena en KYC
-(raro para persona natural pero posible), fallback = **ePayco**
-(mismo modelo, sin SAS, Davivienda). Acción: abrir sandbox
-ePayco en paralelo a Wompi antes de comprometer el sprint.
-
-**Deliverable Steve**: `C:\Users\acer\Downloads\asistente IA\untitled\Asesoría Steve\2026-06-25_decision_pasarela_pagos_colombia.md`
-(57KB, ~700 líneas, 19 fuentes citadas con URL + fecha de
-acceso, tabla comparativa 6×12, decisión + 5 razones + decision
-framework de 5 preguntas + 6 anti-recomendaciones + lecciones
-de la investigación anterior).
-
-**Cambio de prioridad crítico** (Wozniak, post-Steve): **P0 #5
-jobs system sube a bloqueante del sprint de billing**, no nice-to-have.
-Sin jobs, Wompi no puede cobrar recurrentes. **Reordenar backlog**:
-1. Jobs system (P0 #5) — abre el camino.
-2. Billing (P0 #4) — usa jobs para cobros recurrentes.
-3. Chat /goal (D3.4-bis) — nice-to-have, después.
+**Lección CTO 2026-06-25**: dos correcciones del founder en el
+mismo día (Paddle→Wompi, Wompi→ePayco) muestran que la
+optimización para fees es **subordinada** a la simplicidad de
+implementación en early-stage. La heurística correcta:
+**"¿cuánto código nos ahorramos vs cuánto fee nos cuesta?"**.
+Para 100 clientes, 1 sprint de dev vale más que $90 USD/año
+en fees. Esta regla va a mi memoria personal de CTO.
 
 **Decisión de email provider**: **Resend** (founder 2026-06-25).
 Documentado en §5.4.
+
+**Deliverable Steve**: `C:\Users\acer\Downloads\asistente IA\untitled\Asesoría Steve\2026-06-25_decision_pasarela_pagos_colombia.md`
+(57KB, ~700 líneas, 19 fuentes colombianas citadas con URL +
+fecha, tabla 6×12, decisión original Wompi + 5 anti-recomendaciones
++ 5 preguntas decision framework + lecciones).
 
 **Próximo paso propuesto** (orden de fundación):
 1. Spec `AGENT_BILLING_V1_SPEC.md` con scope, no-objetivos,
@@ -445,5 +428,5 @@ Cada item de este backlog debe tener, antes de construir:
 - [x] Item 1 — scrub de secretos — ✅ CERRADO via commit `d3289dd` (2026-06-25). 13 tests nuevos pasan. `SecretScrubber` con 9 regex patterns + entropy-based para high-entropy strings.
 - [x] Item 2 — auth real en el motor — ✅ CERRADO via D3.4 (commit `4af3e0c`) + audit fixes (commit `fe90ab7`)
 - [x] Item 3 — atribución de costo por tenant — ✅ CERRADO via commit `XXXX` (2026-06-25). 6 tests nuevos pasan. `WorkflowAudit.recordLLMCall()` cableado en `OpenRouterLLMInvoker`. Backlog P0 cerrado completo.
-- [ ] **Item 4 — planes + credits + billing — 🔴 PENDIENTE P0. Bloqueante para tomar el primer cliente pagando. Wompi seleccionada como pasarela (re-investigación Steve 2026-06-25). KYC en paralelo al sprint. Spec a escribir antes de código.**
-- [ ] **Item 5 — jobs system — 🔴 PENDIENTE P0. SUBIÓ A BLOQUEANTE de billing (Wompi no tiene API subscriptions — Worgena programa los cobros con jobs). Bloqueante también para invitaciones de email + webhooks + cleanup. Resend seleccionada como email provider. Spec a escribir antes de código.**
+- [ ] **Item 4 — planes + credits + billing — 🔴 PENDIENTE P0. Bloqueante para tomar el primer cliente pagando. ePayco seleccionada como pasarela (founder 2026-06-25, simplicidad > fees). Spec a escribir antes de código. Jobs ya no bloqueante de billing gracias a subscriptions nativas de ePayco.**
+- [ ] **Item 5 — jobs system — 🔴 PENDIENTE P0. Subsidios: invitaciones de email (D3.4 rediseño mitad funcional), cleanup, credit warnings, webhooks. Resend seleccionada como email provider. Spec a escribir antes de código. Puede correr en paralelo a billing.**
