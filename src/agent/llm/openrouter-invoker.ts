@@ -43,6 +43,7 @@ import type {
 } from "./openrouter-client.js";
 import { OpenRouterError } from "./openrouter-errors.js";
 import { DEFAULT_MODEL_PRICING, PricingCatalog } from "./pricing-catalog.js";
+import { consumeCredit, hasActivePlan, InsufficientCreditsError, usdToCredits } from "../../lib/billing/index.js";
 
 // ============================================================
 // OpenRouterLLMInvoker
@@ -87,6 +88,15 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
    * los campos, NO se registra (P1 del sprint spec).
    */
   private readonly audit?: WorkflowAudit;
+  /**
+   * Backlog P0 #4: billing enforcement opcional. Si está `true`,
+   * el invoker chequea `getCreditBalance(tenantId) >= usdToCredits(costUsd)`
+   * ANTES de hacer el chat. Si el balance no alcanza, throwea
+   * `OpenRouterError({code: "INSUFFICIENT_CREDITS", retriable: false})`.
+   * Si está `false` (default para backward-compat con tests pre-billing),
+   * el chequeo se skipea.
+   */
+  private readonly enforceCredits: boolean;
 
   constructor(
     client: OpenRouterClient,
@@ -97,6 +107,8 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
       readonly toolCatalog?: ReadonlyMap<string, OpenAITool>;
       /** Backlog P0 #3: cost attribution. Optional. */
       readonly audit?: WorkflowAudit;
+      /** P0 #4 billing: enforce credit balance antes de cada chat. */
+      readonly enforceCredits?: boolean;
     },
   ) {
     this.client = client;
@@ -104,6 +116,7 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
     this.modelMap = options?.modelMap ?? DEFAULT_MODEL_MAP;
     this.toolCatalog = options?.toolCatalog;
     this.audit = options?.audit;
+    this.enforceCredits = options?.enforceCredits ?? false;
   }
 
   /**
@@ -143,6 +156,50 @@ export class OpenRouterLLMInvoker implements LLMInvoker {
 
     // Costo real: usage.cost de OpenRouter pisa la estimación del catálogo.
     const costUsd = this.resolveCost(chatResponse, modelId);
+
+    // P0 #4: billing enforcement. Si está habilitado y tenemos tenantId,
+    // chequea balance. Si no alcanza, throw. Si alcanza, consume.
+    // Esto ocurre DESPUÉS del chat (necesitamos el costo real). Trade-off:
+    // un cliente sin créditos puede generar 1 call "gratis" antes de ser
+    // bloqueado. Alternativa: pre-estimar y bloquear antes. Elegimos post
+    // porque la estimación puede ser inexacta (spec §2.O4).
+    if (this.enforceCredits && params.tenantId !== undefined) {
+      const tenantId = params.tenantId;
+      if (!hasActivePlan(tenantId)) {
+        throw new OpenRouterError({
+          message: `OpenRouterLLMInvoker: tenant=${tenantId} no tiene plan activo. Subscribe at /api/billing/me.`,
+          httpStatus: 0,
+          code: "INSUFFICIENT_CREDITS",
+          retriable: false,
+        });
+      }
+      const requiredCredits = usdToCredits(costUsd);
+      try {
+        consumeCredit(
+          tenantId,
+          requiredCredits,
+          "llm_call",
+          {
+            taskId: params.taskId,
+            nodeId: params.nodeId,
+            agentCardId: params.agentCardId,
+            costUsd,
+            modelId,
+          },
+        );
+      } catch (e) {
+        if (e instanceof InsufficientCreditsError) {
+          throw new OpenRouterError({
+            message: e.message,
+            httpStatus: 0,
+            code: "INSUFFICIENT_CREDITS",
+            retriable: false,
+          });
+        }
+        // Cualquier otro error de DB → fail-loud per P7.
+        throw e;
+      }
+    }
 
     // Output: si se pidió outputSchema (json_schema), el modelo debería
     // haber retornado JSON. Lo parseamos. Si falla, retornamos el string

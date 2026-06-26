@@ -129,7 +129,8 @@ export type ErrorCode =
   | "ROUTER_NO_MATCH" // el router no encontró match ni default
   | "WORKFLOW_HAS_CYCLE" // validación al cargar
   | "TASK_ALREADY_RUNNING" // re-ejecución concurrente rechazada
-  | "SCHEMA_VERSION_UNSUPPORTED"; // schemaVersion del workflow > la del motor
+  | "SCHEMA_VERSION_UNSUPPORTED" // schemaVersion del workflow > la del motor
+  | "INSUFFICIENT_CREDITS"; // P0 #4: firm sin créditos para esta LLM call
 
 export interface RetryConfig {
   /** Cantidad máxima de reintentos (no incluye la ejecución inicial). */

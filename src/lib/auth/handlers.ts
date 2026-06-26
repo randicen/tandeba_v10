@@ -83,6 +83,19 @@ export async function authMiddleware(
     return next();
   }
 
+  // Webhooks son públicos — se autentican por HMAC signature en el
+  // handler, no por session cookie (P0 #4 spec §4.P4).
+  // ePayco no sabe autenticar con cookies, solo verifica firma.
+  if (req.path.startsWith("/webhooks/")) {
+    return next();
+  }
+
+  // Catálogo de planes es público (precios son marketing, no sensibles).
+  // Forward-compat: si agregamos más endpoints públicos, los listamos acá.
+  if (req.path === "/billing/plans") {
+    return next();
+  }
+
   try {
     // Convert IncomingHttpHeaders to a Web Headers instance.
     // Better Auth's getSession expects a Web Headers object.

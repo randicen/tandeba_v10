@@ -25,7 +25,73 @@ Cierra el ÚLTIMO item P0 del backlog. Habilita revenue per-tenant + unit econom
 - `src/agent/llm/openrouter-invoker.ts` — constructor acepta `audit?: WorkflowAudit`. Después de cada `chat()` exitoso, si audit + los 3 campos están presentes, registra `recordLLMCall()`. P1: si falla el audit, NO throwea.
 - `test_cost_attribution.mts` (nuevo) — 6 tests (happy path, multi-node 5x cost, backward-compat sin audit, sin context, failure path, priority de cost source).
 
-### D3.4 redesign (multi-tenant multi-user firm) cerrado (2026-06-25)
+### P0 #4 Billing v1 (planes + wallet + LLM enforcement) cerrado (2026-06-25)
+
+Cierra P0 #4 de `BACKLOG_P0.md`. Habilita revenue recurrente desde el día 1 con ePayco (Davivienda) como pasarela Colombia-first. Decisión de pasarela: founder eligió ePayco por simplicidad de implementación (subscriptions nativas con dunning automatizado) sobre Wompi (fees más bajos pero scheduler propio).
+
+**Componentes entregados**:
+
+- **Schema (7 tablas + seed)** en `src/lib/db.ts`:
+  - `plans` (id, name, monthly_credits, max_users_per_firm, monthly_price_cop, features_json, sort_order)
+  - `firm_subscriptions` (firm_id, plan_id, status ENUM, epayco_customer_id, epayco_subscription_id, current_period_start/end, cancel_at_period_end)
+  - `credit_ledger` (append-only, source of truth del balance, SUM(delta) = balance)
+  - `credit_packs` (id, credits_amount, price_cop)
+  - `wallet_purchases` (firm_id, credit_pack_id, epayco_charge_id, status, credits_granted)
+  - `auto_recharge_config` (firm_id UNIQUE, threshold, max_per_month — schema listo, lógica NO implementada en v1)
+  - `webhook_events` (provider, external_event_id UNIQUE, status, payload_json) — idempotencia
+  - Seed: `plan_free` (100 créditos/mes), `plan_pro` (2000 créditos a COP $30K/mes), `plan_enterprise` (20000 créditos a COP $300K/mes), 3 credit packs
+
+- **`src/lib/billing/billing.ts`** (524 líneas): `getCreditBalance`, `consumeCredit`, `grantCredit`, `hasActivePlan` (con grant implícito de plan_free), `getCurrentPlan`, `listActivePlans`, `getFirmSubscription`, `ensureFreePlanGrant`, `upsertFirmSubscription`, `cancelFirmSubscription`, `getCreditHistory`. Todas atómicas vía `db.transaction()`. Aceptan `dbInstance?` opcional (forward-compat tests `:memory:` y per-tenant DB en Postgres).
+
+- **`src/lib/billing/conversion.ts`**: `CREDIT_USD_RATE` (default 100 = 1 USD = 100 créditos), `usdToCredits(usd) → credits` con `Math.ceil` (no sub-paga), `creditsToUsd(credits) → usd`.
+
+- **`src/lib/billing/epayco-client.ts` (~450 líneas)**: cliente HTTP custom (NO SDK oficial, mismo patrón que `OpenRouterClient`). Endpoints: `createCustomer`, `getCustomerByEmail`, `createPlan`, `createSubscription`, `cancelSubscription`, `createCharge`. **Verificación de firma HMAC-SHA256** para webhooks con `timingSafeEqual`. `transport` inyectable para tests. `EpaycoError` con 9 codes tipados.
+
+- **`src/lib/billing/epayco-webhook.ts` (~480 líneas)**: `EpaycoWebhookHandler.process(rawBody, signature, externalEventId)`. **Idempotente** vía `webhook_events` con `INSERT OR IGNORE`. Maneja 9 tipos de eventos: `subscription.approved`, `subscription.charged`, `subscription.failed`, `subscription.cancelled`, `subscription.expired`, `payment.completed`, `payment.failed`, y aliases.
+
+- **`src/lib/billing/index.ts`**: barrel exports.
+
+- **`src/agent/workflow-engine/dsl/types.ts`**: `INSUFFICIENT_CREDITS` agregado a `ErrorCode`.
+
+- **`src/agent/llm/openrouter-invoker.ts`**: nuevo option `enforceCredits?: boolean`. Cuando `true` y `params.tenantId !== undefined`, después del `client.chat()` chequea `hasActivePlan(tenantId)` y `consumeCredit(tenantId, usdToCredits(costUsd), 'llm_call', metadata)`. Si falla, throw `OpenRouterError({code: "INSUFFICIENT_CREDITS", retriable: false})`. **Backward-compat**: `enforceCredits` default `false` — los tests acumulados no rompen.
+
+- **`src/lib/auth/handlers.ts`**: `authMiddleware` ahora skipea `/api/webhooks/*` (público, autenticado por HMAC) y `/api/billing/plans` (catálogo de marketing público). Forward-compat: agregar más paths públicos al skip list si hace falta.
+
+- **`server.ts`**: 8 endpoints nuevos en `Billing v1`:
+  - `GET /api/billing/plans` (público)
+  - `GET /api/billing/me` (autenticado)
+  - `POST /api/billing/subscribe` (autenticado, body `{planId, paymentMethodToken}`)
+  - `POST /api/billing/cancel` (autenticado, owner only)
+  - `GET /api/billing/usage` (autenticado)
+  - `GET /api/billing/wallet` (autenticado, balance + packs)
+  - `POST /api/billing/wallet/purchase` (autenticado, body `{creditPackId}`)
+  - `POST /api/webhooks/epayco` (público, `express.raw()` body, verifica firma)
+
+- **`test_billing_v1.mts` (NUEVO)**: 26 tests E2E en 7 bloques (Schema, Balance, Atomicidad, Plans, Webhook, Conversion, Multi-tenancy). Mockea `EpaycoClient` con transport programable. Verifica: schema, balance computation, atomicidad (rollback si falla), webhook signature (válida + inválida), idempotencia de webhooks, conversion credit↔USD, isolation cross-tenant.
+
+**Tests al cierre**: **455 tests pasan, 0 fallidos, 0 regresiones** (358 previos + 26 nuevos P0 #4). tsc limpio.
+
+**Decisiones de diseño (algunas tomadas durante implementación, no en el spec original)**:
+
+1. **`consumeCredit` ya no grant plan_free implícito**. Originalmente lo hacía. Lo cambié: ahora el caller (LLM invoker) llama `hasActivePlan` antes, que sí grant el implícito. Más limpio — `consumeCredit` es una operación pura.
+2. **`getCreditHistory` ordena por `rowid DESC`**, no `created_at DESC`. Razón: `Date.now()` tiene resolución de 1ms, y múltiples operaciones en el mismo ms rompen el orden. `rowid` (implícito en SQLite) es monotónico y garantiza orden determinístico. Forward-compat Postgres: usar `BIGSERIAL seq` o `hrtime` con resolución de nanosegundos.
+3. **Webhook handler procesa in-process** (NO cola de jobs). Cumple <30s de ePayco. Si latency > 5s, migrar a jobs system (P0 #5).
+4. **`ensureFreePlanGrant` se llama desde `hasActivePlan`**, no desde `consumeCredit`. Esto garantiza que el primer check active el grant.
+5. **PSE fee warning**: ePayco cobra mínimo $2.000+IVA en transacciones <$60.000 COP. Para plan Pro a COP $30K/mes, fee efectivo = 9.3% (no 2.64%). Documentado en spec. UI debería ofrecer descuento o push a tarjeta.
+
+**Lo que NO se hace (NO-objetivos respetados)**:
+- DIAN facturación electrónica (post-SAS)
+- Auto-recharge del wallet (schema listo, lógica NO)
+- UI de billing/checkout
+- Multi-currency
+- Migración a Postgres
+- Wompi como segunda pasarela
+- Refunds / disputes
+
+**Bloqueante para tomar el primer cliente pagando**:
+- Founder abre cuenta sandbox ePayco (gratis, persona natural con RUT) y pasa las keys: `EPAYCO_PUBLIC_KEY`, `EPAYCO_PRIVATE_KEY`, `EPAYCO_TEST_MODE=true`. Sin esto, los endpoints existen pero no procesan pagos reales.
+
+**Próximo sprint propuesto** (sigue P0 #4 por bloqueante abierto): **P0 #5 jobs system** (en paralelo a onboarding del primer cliente). Jobs system cierra la mitad funcional del onboarding D3.4 (emails de invitaciones) + habilita cron real de webhooks de billing si latency > 5s.
 
 Reemplaza el modelo single-user-per-firm de D3.4 con multi-tenant multi-user real. Onboarding explícito (crear firm / unirse con invite). Mismo code path para el primer user y el millón-ésimo. NO placeholders. NO asistencia manual del founder.
 

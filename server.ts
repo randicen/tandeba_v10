@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from "express";
+const { raw: rawBodyParser } = express;
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { pool } from "./src/lib/db.js";
@@ -17,6 +18,20 @@ import { v4 as uuidv4 } from "uuid";
 import { createSession, getSession, getSessions, stepSession, addMessage, updateSession } from "./src/agent/agent.js";
 import { getWorkspaceFiles, syncWorkspaceFromR2, ensureFileLocal } from "./src/agent/tools.js";
 import { isInsufficientBalance, MAINTENANCE_MESSAGE, getUserMessage } from "./src/lib/llm-errors.js";
+
+// P0 #4 Billing: imports para endpoints REST.
+import {
+  listActivePlans,
+  getCurrentPlan,
+  getCreditBalance,
+  getCreditHistory,
+  getFirmSubscription,
+  cancelFirmSubscription,
+  InsufficientCreditsError,
+  EpaycoClient,
+  EpaycoWebhookHandler,
+  EpaycoError,
+} from "./src/lib/billing/index.js";
 
 // D3.4: Auth stack
 import helmet from "helmet";
@@ -438,6 +453,337 @@ async function startServer() {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ============================================================
+  // P0 #4 Billing endpoints (ePayco + plans + wallet).
+  // 7 endpoints REST + 1 webhook público.
+  // Spec: AGENT_BILLING_V1_SPEC.md §2.O5.
+  // ============================================================
+
+  // Helper: extrae el firmId del req (seteado por authMiddleware).
+  const requireFirmId = (req: express.Request): string => {
+    const firmId = (req as express.Request & { activeFirmId?: string }).activeFirmId;
+    if (!firmId) {
+      throw new Error("requireFirmId: req.activeFirmId missing (authMiddleware not run?)");
+    }
+    return firmId;
+  };
+
+  // Plan ID de ePayco (Worgena mapea nuestro plan_id → ePayco plan_id).
+  // Default para v1: usamos nuestro plan_id como ePayco plan_id (1:1).
+  // Forward-compat: si ePayco requiere IDs distintos, agregar map acá.
+  const EPAYCO_PLAN_IDS: Record<string, string> = {
+    plan_pro: "worgena_pro_monthly",
+    plan_enterprise: "worgena_enterprise_monthly",
+  };
+
+  // Map ePayco plan_id → Worgena plan_id para grants de créditos
+  // (usado por el webhook handler).
+  const EPAYCO_PLAN_TO_CREDITS: Map<string, { credits: number; reason: "plan_grant" }> = new Map([
+    ["worgena_pro_monthly", { credits: 2000, reason: "plan_grant" }],
+    ["worgena_enterprise_monthly", { credits: 20000, reason: "plan_grant" }],
+  ]);
+
+  // Constructor lazy del ePayco client (lee env al primer uso).
+  const getEpaycoClient = (): EpaycoClient => {
+    const publicKey = process.env.EPAYCO_PUBLIC_KEY ?? "";
+    const privateKey = process.env.EPAYCO_PRIVATE_KEY ?? "";
+    const testMode = (process.env.EPAYCO_TEST_MODE ?? "true") === "true";
+    if (!publicKey || !privateKey) {
+      throw new Error(
+        "EPAYCO_PUBLIC_KEY y EPAYCO_PRIVATE_KEY son requeridos. Config en .env.",
+      );
+    }
+    return new EpaycoClient({ publicKey, privateKey, testMode });
+  };
+
+  // GET /api/billing/plans — PÚBLICO (catálogo de marketing).
+  // Skipea authMiddleware (ver handlers.ts skip list).
+  app.get("/api/billing/plans", (_req, res) => {
+    try {
+      const plans = listActivePlans();
+      res.json({ plans });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/billing/me — autenticado, retorna plan + balance + period.
+  app.get("/api/billing/me", (req, res) => {
+    try {
+      const firmId = requireFirmId(req);
+      const plan = getCurrentPlan(firmId);
+      const balance = getCreditBalance(firmId);
+      const sub = getFirmSubscription(firmId);
+      res.json({
+        plan,
+        balance,
+        subscription: sub,
+        currentPeriodEnd: sub?.currentPeriodEnd ?? null,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/billing/subscribe — autenticado, body { planId, paymentMethodToken? }.
+  // Crea customer + subscription en ePayco, persiste firm_subscriptions con
+  // status='pending', retorna checkoutUrl si requiere acción del cliente.
+  app.post("/api/billing/subscribe", async (req, res) => {
+    try {
+      const firmId = requireFirmId(req);
+      const userId = requireUserId(req);
+      const { planId, paymentMethodToken } = req.body ?? {};
+      if (typeof planId !== "string") {
+        res.status(400).json({ error: "planId is required" });
+        return;
+      }
+      // Validar que el plan existe y es subscriptible
+      const plan = listActivePlans().find((p) => p.id === planId);
+      if (!plan) {
+        res.status(404).json({ error: "PLAN_NOT_FOUND" });
+        return;
+      }
+      if (planId === "plan_free") {
+        res.status(400).json({ error: "PLAN_FREE_NO_SUBSCRIBE" });
+        return;
+      }
+      const epaycoPlanId = EPAYCO_PLAN_IDS[planId];
+      if (!epaycoPlanId) {
+        res.status(400).json({ error: "PLAN_NOT_IN_EPAYCO_MAP" });
+        return;
+      }
+      // Si no hay paymentMethodToken, retornar error (el frontend debe
+      // tokenizar vía checkout de ePayco primero).
+      if (typeof paymentMethodToken !== "string") {
+        res.status(400).json({ error: "PAYMENT_METHOD_REQUIRED" });
+        return;
+      }
+
+      const client = getEpaycoClient();
+      // Crear customer (o reusar si ya hay)
+      const userEmail = (req as express.Request & { user?: { email?: string } }).user?.email ?? "";
+      const userName = (req as express.Request & { user?: { name?: string } }).user?.name ?? userEmail;
+      let customer;
+      try {
+        customer = await client.createCustomer({ email: userEmail, name: userName });
+      } catch (e) {
+        if (e instanceof EpaycoError && e.code === "EPAYCO_CONFLICT") {
+          // Customer ya existe, buscar por email
+          const existing = await client.getCustomerByEmail(userEmail);
+          if (!existing) throw e;
+          customer = existing;
+        } else {
+          throw e;
+        }
+      }
+      // Crear subscription en ePayco
+      const sub = await client.createSubscription({
+        customerId: customer.id,
+        planId: epaycoPlanId,
+        paymentMethodToken,
+        urlConfirmation: `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/api/webhooks/epayco`,
+      });
+      // Persistir firm_subscriptions con status pending (ePayco confirmará vía webhook)
+      const { upsertFirmSubscription } = await import("./src/lib/billing/billing.js");
+      upsertFirmSubscription(
+        firmId,
+        planId,
+        sub.status,
+        customer.id,
+        sub.id,
+        sub.currentPeriodStart,
+        sub.currentPeriodEnd,
+      );
+      res.json({
+        subscriptionId: sub.id,
+        status: sub.status,
+        checkoutUrl: sub.checkoutUrl,
+      });
+    } catch (e: any) {
+      if (e instanceof EpaycoError) {
+        res.status(e.httpStatus || 502).json({ error: e.code, message: e.message });
+        return;
+      }
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/billing/cancel — autenticado, owner only. Marca cancel_at_period_end.
+  app.post("/api/billing/cancel", (req, res) => {
+    try {
+      const firmId = requireFirmId(req);
+      // TODO: validar que el user es owner del firm. Por ahora: cualquier
+      // member puede cancelar su propia subscription (forward-compat D6
+      // agrega roles granulares).
+      const sub = getFirmSubscription(firmId);
+      if (!sub) {
+        res.status(404).json({ error: "NO_SUBSCRIPTION" });
+        return;
+      }
+      const cancelled = cancelFirmSubscription(firmId);
+      res.json({ subscription: cancelled });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/billing/usage?from=&to= — autenticado. Lee de credit_ledger.
+  app.get("/api/billing/usage", (req, res) => {
+    try {
+      const firmId = requireFirmId(req);
+      const history = getCreditHistory(firmId, 100);
+      res.json({ history });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/billing/wallet — autenticado. Balance + packs + historial.
+  app.get("/api/billing/wallet", async (req, res) => {
+    try {
+      const firmId = requireFirmId(req);
+      const balance = getCreditBalance(firmId);
+      const { listActivePacks } = await import("./src/lib/billing/billing.js").then(
+        (m) => ({ listActivePacks: (m as never)["listActivePacks"] }),
+      ).catch(() => ({ listActivePacks: null } as { listActivePacks: unknown }));
+      // Listar packs via query directa (más simple)
+      const packs = pool.query(
+        "SELECT id, name, credits_amount, price_cop FROM credit_packs WHERE is_active = 1 ORDER BY sort_order",
+      );
+      res.json({ balance, packs: packs.rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/billing/wallet/purchase — autenticado, body { creditPackId }.
+  // Crea wallet_purchases con status pending, llama ePayco para cobrar,
+  // retorna checkoutUrl si requiere acción del cliente.
+  app.post("/api/billing/wallet/purchase", async (req, res) => {
+    try {
+      const firmId = requireFirmId(req);
+      const userId = requireUserId(req);
+      const { creditPackId } = req.body ?? {};
+      if (typeof creditPackId !== "string") {
+        res.status(400).json({ error: "creditPackId is required" });
+        return;
+      }
+      // Buscar pack
+      const packRow = pool.query(
+        "SELECT id, credits_amount, price_cop FROM credit_packs WHERE id = ? AND is_active = 1",
+        [creditPackId],
+      );
+      if (packRow.rows.length === 0) {
+        res.status(404).json({ error: "PACK_NOT_FOUND" });
+        return;
+      }
+      const pack = packRow.rows[0] as { id: string; credits_amount: number; price_cop: number };
+      // Crear wallet_purchases con status pending
+      const purchaseId = `wp-${crypto.randomUUID()}`;
+      const now = Date.now();
+      pool.query(
+        `INSERT INTO wallet_purchases
+           (id, firm_id, credit_pack_id, amount_cop, credits_granted, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+        [purchaseId, firmId, pack.id, pack.price_cop, pack.credits_amount, now],
+      );
+      // Llamar ePayco para crear el cargo
+      const client = getEpaycoClient();
+      const userEmail = (req as express.Request & { user?: { email?: string } }).user?.email ?? "";
+      // Crear o reusar customer
+      let customer;
+      try {
+        customer = await client.createCustomer({
+          email: userEmail,
+          name: userEmail.split("@")[0] ?? "User",
+        });
+      } catch (e) {
+        if (e instanceof EpaycoError && e.code === "EPAYCO_CONFLICT") {
+          const existing = await client.getCustomerByEmail(userEmail);
+          if (!existing) throw e;
+          customer = existing;
+        } else {
+          throw e;
+        }
+      }
+      // Resolve existing epayco_customer_id to update firm_subscriptions.
+      // For wallet-only purchase, we don't need a subscription, but
+      // we record customer_id so the webhook can resolve firm_id.
+      const sub = getFirmSubscription(firmId);
+      if (sub && !sub.epaycoCustomerId) {
+        // Update the existing subscription record with customer_id.
+        pool.query(
+          "UPDATE firm_subscriptions SET epayco_customer_id = ?, updated_at = ? WHERE id = ?",
+          [customer.id, now, sub.id],
+        );
+      }
+      const charge = await client.createCharge({
+        customerId: customer.id,
+        paymentMethodToken: "use-checkout", // placeholder; el frontend completa via checkout URL
+        amount: pack.price_cop,
+        currency: "COP",
+        description: `Worgena ${pack.credits_amount} credit pack`,
+        reference: purchaseId,
+        urlConfirmation: `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/api/webhooks/epayco`,
+        urlResponse: `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/billing/wallet/complete`,
+      });
+      // Update wallet_purchases con el epayco charge id
+      pool.query(
+        "UPDATE wallet_purchases SET epayco_charge_id = ? WHERE id = ?",
+        [charge.id, purchaseId],
+      );
+      res.json({
+        purchaseId,
+        chargeId: charge.id,
+        checkoutUrl: charge.checkoutUrl,
+        status: charge.status,
+      });
+    } catch (e: any) {
+      if (e instanceof EpaycoError) {
+        res.status(e.httpStatus || 502).json({ error: e.code, message: e.message });
+        return;
+      }
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/webhooks/epayco — PÚBLICO, autenticado por HMAC signature.
+  // Skipea authMiddleware (ver handlers.ts skip list). Lee raw body para
+  // verificar firma, luego parsea y procesa.
+  app.post(
+    "/api/webhooks/epayco",
+    rawBodyParser({ type: "*/*" }),
+    async (req, res) => {
+      try {
+        const rawBody = (req as express.Request & { body?: unknown }).body;
+        if (typeof rawBody !== "string") {
+          res.status(400).json({ error: "Raw body required for webhook" });
+          return;
+        }
+        const signature =
+          (req.headers["x-signature"] as string | undefined) ?? "";
+        const externalEventId =
+          (req.headers["x-event-id"] as string | undefined) ??
+          (req.headers["x-id"] as string | undefined) ??
+          `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const client = getEpaycoClient();
+        const handler = new EpaycoWebhookHandler({
+          db: (await import("./src/lib/db.js")).db,
+          client,
+          planIdToCreditsCop: EPAYCO_PLAN_TO_CREDITS,
+        });
+        const result = await handler.process(rawBody, signature, externalEventId);
+        res.status(result.status).json(result.body);
+      } catch (e: any) {
+        if (e instanceof EpaycoError) {
+          res.status(e.httpStatus || 401).json({ error: e.code, message: e.message });
+          return;
+        }
+        res.status(500).json({ error: e.message });
+      }
+    },
+  );
 
   // Space API Routes
   const { createSpace, getSpaces, renameSpace, deleteSpace } = await import("./src/agent/spaces.js");
