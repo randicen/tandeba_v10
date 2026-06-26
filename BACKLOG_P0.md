@@ -291,7 +291,7 @@ Por ahora: Wompi gana por transparencia de pricing.
 (mismo modelo, sin SAS, Davivienda). Acción: abrir sandbox
 ePayco en paralelo a Wompi antes de comprometer el sprint.
 
-**Deliverable Steve**: `C:\Users\acer\.mavis\plans\plan_payments_co_steve\deliverable.md`
+**Deliverable Steve**: `C:\Users\acer\Downloads\asistente IA\untitled\Asesoría Steve\2026-06-25_decision_pasarela_pagos_colombia.md`
 (57KB, ~700 líneas, 19 fuentes citadas con URL + fecha de
 acceso, tabla comparativa 6×12, decisión + 5 razones + decision
 framework de 5 preguntas + 6 anti-recomendaciones + lecciones
