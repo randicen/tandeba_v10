@@ -271,6 +271,33 @@ export function createInvitation(
     inviterUserId,
   );
 
+  // P0 #5 jobs: encolar email de invitación. Cierra la mitad funcional
+  // de D3.4. Si el email no se pasó en el form, NO encolamos (no podemos
+  // mandar sin destino). Si el sistema de jobs no está disponible (e.g.
+  // en un test aislado), lo tragamos silenciosamente: la invitación está
+  // creada, el admin puede re-enviar manualmente via UI v2.
+  //
+  // Usamos setImmediate + dynamic import porque createInvitation es sync
+  // (forward-compat con tests pre-jobs que lo llaman sin await).
+  if (email && email.trim().length > 0) {
+    setImmediate(() => {
+      void import("../jobs/repository.js")
+        .then(({ enqueueJob }) => {
+          enqueueJob(
+            "send_invitation_email",
+            { invitationId: id },
+            { idempotencyKey: `invite-${id}` },
+            db,
+          );
+        })
+        .catch((e: Error) => {
+          console.warn(
+            `[createInvitation] failed to enqueue send_invitation_email (id=${id}): ${e.message}`,
+          );
+        });
+    });
+  }
+
   return { id, token, expiresAt };
 }
 

@@ -1263,6 +1263,41 @@ async function startServer() {
       }, 1000);
     }
   });
+
+  // P0 #5 jobs: arrancar el worker si está configurado.
+  // Si falta RESEND_API_KEY, skip (dev mode sin email).
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const { startJobsWorker } = await import("./src/lib/jobs/worker.js");
+      const { ResendProvider } = await import("./src/lib/email/index.js");
+      const email = new ResendProvider({
+        apiKey: process.env.RESEND_API_KEY,
+        fromEmail: process.env.RESEND_FROM_EMAIL ?? "noreply@worgena.com",
+        fromName: process.env.RESEND_FROM_NAME ?? "Worgena",
+      });
+      const jobsWorker = await startJobsWorker({
+        db: (await import("./src/lib/db.js")).db,
+        email,
+        publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${PORT}`,
+      });
+      console.log("[jobs-worker] started");
+      // Graceful shutdown
+      const shutdown = async (signal: string) => {
+        console.log(`[${signal}] received, shutting down...`);
+        await jobsWorker.stop(signal);
+        server.close();
+        process.exit(0);
+      };
+      process.on("SIGTERM", () => void shutdown("SIGTERM"));
+      process.on("SIGINT", () => void shutdown("SIGINT"));
+    } catch (e) {
+      console.error("[jobs-worker] failed to start:", e);
+    }
+  } else {
+    console.log(
+      "[jobs-worker] RESEND_API_KEY not set, worker NOT started (email jobs will be enqueued but never processed)",
+    );
+  }
 }
 
 startServer();

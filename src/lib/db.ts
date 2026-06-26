@@ -569,6 +569,38 @@ function initDB() {
       }
     }
 
+    // P0 #5 Jobs: cola persistente para work async (emails, cleanup, etc).
+    // Schema Postgres-compatible: TEXT, INTEGER, sin AUTOINCREMENT.
+    // idempotency_key opcional con UNIQUE para deduplicación.
+    const jobsExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
+      .get();
+    if (!jobsExists) {
+      try {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            idempotency_key TEXT UNIQUE,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'dead_letter')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            scheduled_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            created_at INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS jobs_status_scheduled_idx ON jobs(status, scheduled_at);
+          CREATE INDEX IF NOT EXISTS jobs_type_idx ON jobs(type);
+          CREATE INDEX IF NOT EXISTS jobs_idempotency_key_idx ON jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+        `);
+        console.log('Migration: created jobs table');
+      } catch (e: any) {
+        console.error('Migration jobs failed:', e.message);
+      }
+    }
+
     // Seed de planes (idempotente: INSERT OR IGNORE). Si la tabla
     // acaba de ser creada, los planes no existen. Si ya existía y los
     // planes también, no duplicamos.

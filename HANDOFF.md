@@ -236,16 +236,74 @@ Hardening sobre D3.4: 2FA TOTP opt-in + `audit_auth` persistente + `SECURITY.md`
 2. ✅ Scrub de secretos — `d3289dd` (2026-06-25)
 3. ✅ Costo LLM atribuible por tenant — `XXXX` (2026-06-25)
 
-### Próximo sprint propuesto: **D3.5-bis Billing (P0 #4) con ePayco**, en paralelo con Jobs (P0 #5)
+### Próximo sprint propuesto: **D3.4-bis Chat `/goal`** (nice-to-have ahora, post-P0)
 
-Razón por fundamento: el fundador señaló que sin billing ni jobs no podemos tomar clientes pagando. **Con ePayco, Jobs deja de ser bloqueante de Billing** (ePayco tiene subscriptions nativas con dunning). Billing puede arrancar ya, Jobs puede correr en paralelo.
+**Estado del backlog P0 al 2026-06-25**:
+- ✅ P0 #1 — Scrub de secretos
+- ✅ P0 #2 — Auth real en motor
+- ✅ P0 #3 — Costo LLM atribuible por tenant
+- ✅ P0 #4 — Planes + credits + billing (ePayco)
+- ✅ P0 #5 — Jobs system (Resend email + 5 handlers + worker loop)
 
-**Orden de sprints actualizado**:
-1. **D3.5-bis Billing** (P0 #4) — `plans`, `firm_subscriptions`, `credit_ledger` (append-only), `credit_packs`, `wallet_purchases`, `auto_recharge_config`, LLM enforcement, endpoints `/api/billing/*`, webhook de ePayco. **ePayco seleccionada** (founder 2026-06-25 — simplicidad > fees). Spec primero, código después.
-2. **D3.5-ter Jobs system** (P0 #5) — tabla `jobs` + worker loop + handlers (`send_invitation_email`, `enforce_credit_warning`, `cleanup_audit`). Resend seleccionada como email provider. Cierra la mitad funcional del onboarding (emails de invitaciones). Puede arrancar en paralelo a billing.
-3. **D3.4-bis Chat `/goal`** (nice-to-have) — cablear `SkillsRegistry` y `activeFirmId` al chat agent. Diferible hasta que billing + jobs estén cerrados.
+**Backlog P0 COMPLETO**. Worgena tiene la infraestructura mínima viable: multi-tenant + auth + billing + jobs + observability básica.
 
-**Forward-compat con D4 (memoria 4 capas)**: las episodic events del chat se persisten via jobs (job type `record_episodic_event`). D4 los lee.
+**Próximo sprint sugerido**: **D3.4-bis chat `/goal`**. Cablear el chat agent (D1) a las primitivas nuevas (`activeFirmId`, skills, tools). NO-objetivo: workflows (decidido por el founder 2026-06-25 — chat + skills + tools cubre el 80%).
+
+**Forward-compat**: cuando Worgena migre a Postgres, jobs v1 se puede migrar a Graphile Worker con cambios mínimos. Email provider interface permite swap a SendGrid/SES si Resend limita.
+
+**Compliance review pendiente**: el threshold de `cleanup_audit` (1 año) requiere validación legal con contador o revisor (Habeas Data, Ley 1581/2012). Documentado en `BACKLOG_P0.md` §5.3.
+
+### P0 #5 Jobs system cerrado (2026-06-25)
+
+Cierra P0 #5 de `BACKLOG_P0.md`. **Backlog P0 ahora completo**. Habilita work async (emails de invitación, credit warnings, periodic cleanup, webhooks) sobre SQLite in-house con `db.transaction()` atómico. Forward-compat a Postgres: swap a Graphile Worker sin cambiar el registry de handlers.
+
+**Componentes entregados**:
+
+- **Schema** (`src/lib/db.ts`): tabla `jobs` con 3 índices (`status,scheduled_at`, `type`, `idempotency_key`). Postgres-compatible (TEXT, INTEGER). Migrations idempotentes.
+
+- **Email provider** (`src/lib/email/`): `EmailProvider` interface + `EmailProviderError` tipado. `ResendProvider` impl con fetch directo + transport inyectable (mismo patrón que `EpaycoClient` y `OpenRouterClient`). `RESEND_API_KEY` y `RESEND_FROM_EMAIL` en `.env`.
+
+- **Jobs repository** (`src/lib/jobs/repository.ts`): `enqueueJob` (idempotente via `idempotency_key`), `claimPendingJobs` (atómico con `UPDATE ... WHERE status='pending' RETURNING` + ORDER BY `rowid` para determinismo), `markJobCompleted/Failed/DeadLetter` (con backoff exponencial + jitter: 5s, 30s, 2min, 10min, 1h), `listJobs` con filtros, `requeueIn` (helper para re-encolar).
+
+- **Worker** (`src/lib/jobs/worker.ts`): `JobsWorker` class con loop asíncrono, claim + dispatch, retries con backoff, dead_letter queue, **graceful shutdown** (SIGTERM/SIGINT espera running jobs hasta 30s). `startJobsWorker()` helper. `getJobsHealth()` para `/api/health` (forward-compat). Encola cleanup jobs al startup con `idempotencyKey: 'cleanup_audit_recurring'` / `'cleanup_invitations_recurring'`.
+
+- **5 handlers** (`src/lib/jobs/handlers/`):
+  - `send_invitation_email` — lee tenant_invitations, JOIN con tenants y auth_user, genera URL con token, manda email via Resend. **Cierra la mitad funcional de D3.4**.
+  - `enforce_credit_warning` — chequea ratio balance/plan, si <20% manda email al owner. Idempotente por día via `credit-warning-{firmId}-{YYYY-MM-DD}`.
+  - `cleanup_audit` — DELETE `audit_auth WHERE created_at < cutoff` (Habeas Data retention, default 1 año).
+  - `cleanup_invitations` — DELETE expired+used (>30 días).
+  - `send_email_generic` — para casos ad-hoc (forward-compat magic links, etc).
+
+- **Integración D3.4** (`src/lib/auth/firm.ts`): `createInvitation()` ahora encola `send_invitation_email` automáticamente (vía `setImmediate` + dynamic import para no romper la firma sync de la función).
+
+- **Integración P0 #4** (`src/lib/billing/billing.ts`): `consumeCredit()` chequea si el balance cayó <20% del plan, encola `enforce_credit_warning` con idempotencia por día.
+
+- **Server** (`server.ts`): arranca el worker solo si `RESEND_API_KEY` está seteado (dev mode sin email sigue funcionando). Graceful shutdown integrado con SIGTERM/SIGINT.
+
+- **Tests** (`test_jobs_v1.mts`): 22 tests E2E en 5 bloques (Schema, Repository, Handlers, Worker integration, Registry). Mockea `EmailProvider` con `MockEmailProvider` que captura emails enviados. Verifica: schema con CHECK/UNIQUE, enqueue idempotente, claim atómico + determinístico, atomicidad con dos workers concurrentes, backoff con jitter, todos los handlers, integración con D3.4/P0 #4.
+
+**Tests al cierre**: **477 tests pasan, 0 fallidos, 0 regresiones** (455 previos + 22 nuevos). tsc limpio.
+
+**Decisiones tomadas durante implementación** (no en spec original):
+1. **`ORDER BY scheduled_at ASC, rowid ASC` en el claim** — `rowid` (implícito en SQLite) es monotónico → orden determinístico cuando múltiples jobs tienen mismo `scheduled_at` (mismo ms). Sin esto, tests con timestamps iguales eran flaky.
+2. **`setImmediate(() => dynamic import)` para enqueue desde funciones sync** — `createInvitation` es sync (forward-compat con tests pre-jobs). Usar `await import()` rompía la compilación. `setImmediate` + `.then()` encola fire-and-forget sin bloquear.
+3. **Cleanup de jobs atómico con `INSERT OR IGNORE` en `enqueueJob` con `idempotency_key`** — race condition entre workers: si dos enqueues con misma key al mismo tiempo, el segundo hace `INSERT OR IGNORE` y retorna el row del primero.
+4. **`claimPendingJobs` retorna rows con `ORDER BY` explícito en el SELECT final** — sin esto, SQLite retornaba en orden arbitrario después del UPDATE (el IN clause no preserva orden). Bug encontrado en test B3, fixed.
+
+**Lo que NO se hace** (NO-objetivos respetados):
+- Bull/Redis, Graphile/Postgres (custom in-house durante SQLite).
+- UI dashboard de jobs.
+- Multi-region worker.
+- Streaming output.
+- Cancellation API.
+- Webhook async de ePayco (sigue in-process en P0 #4, jobs está listo para absorberlo si latency > 5s).
+- Auto-recharge wallet.
+- DIAN facturación electrónica.
+- Retry policy configurable por job type.
+
+**Bloqueante para producción**:
+- Founder abre cuenta Resend (https://resend.com) y crea API key. Agrega a `.env`: `RESEND_API_KEY=re_...`, `RESEND_FROM_EMAIL=noreply@worgena.com`, `RESEND_FROM_NAME=Worgena`. Verificar dominio en Resend antes de producción.
+- Compliance review del threshold de `cleanup_audit` (Habeas Data, Ley 1581/2012). Documentado en `BACKLOG_P0.md` §5.3.
 
 **D4 sigue en roadmap** pero después de billing + jobs + chat.
 

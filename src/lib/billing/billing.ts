@@ -426,6 +426,42 @@ export function consumeCredit(
     );
   });
   txn();
+
+  // P0 #5 jobs: encolar warning si el balance cayó por debajo del
+  // 20% del plan. Idempotente via `idempotencyKey` por día: no
+  // spameamos al admin con un email por cada LLM call. Si el sistema
+  // de jobs no está disponible (e.g. test aislado), swallow.
+  try {
+    const plan = getCurrentPlan(firmId, db);
+    if (plan && plan.monthlyCredits > 0) {
+      const balance = getCreditBalance(firmId, db);
+      const ratio = balance / plan.monthlyCredits;
+      if (ratio < 0.2) {
+        // Dynamic import para evitar circular deps
+        import("../jobs/repository.js").then(({ enqueueJob }) => {
+          const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+          enqueueJob(
+            "enforce_credit_warning",
+            { firmId, thresholdFraction: 0.2 },
+            {
+              idempotencyKey: `credit-warning-${firmId}-${today}`,
+            },
+            db,
+          );
+        }).catch((e) => {
+          console.warn(
+            `[consumeCredit] failed to enqueue credit warning for firm=${firmId}: ${(e as Error).message}`,
+          );
+        });
+      }
+    }
+  } catch (e) {
+    // swallow — el credit consumption ya se hizo, no fallar el flow
+    // principal.
+    console.warn(
+      `[consumeCredit] failed to check credit warning threshold: ${(e as Error).message}`,
+    );
+  }
 }
 
 /**
