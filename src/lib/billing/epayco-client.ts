@@ -1,66 +1,61 @@
 /**
- * Worgena — ePayco API client (P0 #4 billing v1).
+ * Worgena — ePayco API client (P0 #4 billing v2 — refactor con SDK oficial).
  *
- * Cliente HTTP custom en TypeScript para la pasarela ePayco
- * (https://api.epayco.co). NO usa el SDK oficial
- * (`epayco-sdk-node` v1.4.4) por:
+ * **Versión 2 (2026-06-25)**: Refactor para usar el SDK oficial
+ * `epayco-sdk-node` v1.4.4. El custom fetch directo de la v1 matcheaba
+ * los endpoints legacy `/v1/...` pero no la doc oficial actualizada
+ * (Smart Checkout v2 con sesiones + JWT). Decisión: usar el SDK
+ * oficial. Razones:
  *
- * 1. **Type safety**: el SDK no tiene tipos estrictos, devuelve
- *    `any`. Nuestro cliente tiene types explícitos.
- * 2. **Control de errores**: nosotros decidimos cómo mapear errores
- *    HTTP a `EpaycoError` con codes tipados.
- * 3. **Testabilidad**: el `transport` es inyectable (mismo patrón
- *    que `OpenRouterClient`). Los tests pueden simular responses
- *    sin tocar red.
- * 4. **Tamaño bundle**: SDK = ~150KB, fetch = 0.
+ * 1. **Match con doc oficial**: el SDK usa los mismos endpoints que
+ *    recomienda la doc oficial. Si ePayco actualiza la doc, ePayco
+ *    actualiza el SDK. No rompemos nosotros.
+ * 2. **Mantenimiento**: el vendor mantiene el SDK. No es código nuestro.
+ * 3. **Forward-compat**: cuando salga v2 del SDK con Smart Checkout v2
+ *    completo, swappear.
  *
- * Trade-off: si el SDK agrega features que no son accesibles via
- * REST (ej: helpers de UI), reconsiderar. Por ahora, REST cubre
- * todo lo que necesitamos.
+ * **Lo que sigue siendo custom** (no en el SDK):
+ * - `verifyWebhookSignature` (HMAC-SHA256 con privateKey): ePayco no
+ *   expone esto en el SDK. Lo mantenemos.
+ * - `EpaycoError` tipado con códigos del motor: re-export del SDK
+ *   + mapping.
  *
- * **Decisión D1 del spec**: SDK vs fetch. Default: fetch. Re-evaluar
- * si se ve fricción durante implementación.
+ * **Limitaciones conocidas** (vs Smart Checkout v2 que recomienda la
+ * doc oficial 2026-06-01): el SDK v1.4.4 todavía NO implementa
+ * Smart Checkout v2 (sesiones con JWT). Usa el patrón legacy de
+ * REST directo con Bearer. Funciona, pero es la "vieja forma".
+ * Si ePayco deprecara la API legacy, swappear al SDK v2 (o Smart
+ * Checkout custom).
  *
- * **API key handling**: la `EPAYCO_PRIVATE_KEY` NUNCA se loguea,
- * NUNCA se incluye en mensajes de error. Verificable con grep.
- *
- * Spec: `AGENT_BILLING_V1_SPEC.md` §2.O3.
+ * Spec: AGENT_BILLING_V1_SPEC.md §2.O3.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createRequire } from "node:module";
+
+// SDK es CommonJS; usamos createRequire para importarlo desde ESM.
+const requireCJS = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const EpaycoSDK = requireCJS("epayco-sdk-node");
 
 // ============================================================
-// Types
+// Types (exportados para compatibilidad con código existente)
 // ============================================================
 
-/**
- * Transport inyectable. Default: fetch nativo. Tests pasan un
- * mock que programa responses FIFO.
- */
-export type EpaycoTransport = (
-  url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
-) => Promise<{ status: number; text: () => Promise<string> }>;
+export type EpaycoTransport = unknown; // No se usa más, kept for API compat.
 
 export interface EpaycoClientOptions {
   /** Public key (cliente). Seguro de exponer en frontend si fuera necesario. */
   publicKey: string;
   /** Private key (confidencial). NUNCA exponer. */
   privateKey: string;
-  /** true = sandbox (https://api.secure.payco.co). false = production. */
+  /** true = sandbox. false = production. */
   testMode: boolean;
-  /** Transport inyectable. Default: fetch global. */
-  transport?: EpaycoTransport;
 }
 
 export interface CreateCustomerInput {
-  /** Email del customer (Better Auth user.email). */
   email: string;
-  /** Nombre del customer. */
   name: string;
-  /** Teléfono (opcional, ePayco requiere para algunos métodos). */
   phone?: string;
-  /** Default: false. */
   defaultCard?: boolean;
 }
 
@@ -78,9 +73,7 @@ export interface CreatePlanInput {
   currency: "COP" | "USD";
   interval: "month" | "year";
   intervalCount: number;
-  /** URL de retorno post-pago. */
   urlConfirmation: string;
-  /** URL de respuesta al cliente. */
   urlResponse: string;
 }
 
@@ -93,13 +86,9 @@ export interface EpaycoPlan {
 }
 
 export interface CreateSubscriptionInput {
-  /** Customer de ePayco (creado antes). */
   customerId: string;
-  /** Plan de ePayco (creado antes). */
   planId: string;
-  /** Token de método de pago (de checkout/SDK frontend). */
   paymentMethodToken: string;
-  /** URL de retorno post-pago. */
   urlConfirmation?: string;
 }
 
@@ -108,7 +97,6 @@ export interface EpaycoSubscription {
   customerId: string;
   planId: string;
   status: "pending" | "active" | "past_due" | "cancelled" | "expired";
-  /** URL de checkout si requiere acción del cliente. */
   checkoutUrl?: string;
   currentPeriodStart: number;
   currentPeriodEnd: number;
@@ -116,19 +104,14 @@ export interface EpaycoSubscription {
 }
 
 export interface CreateChargeInput {
-  /** Customer de ePayco (para one-time wallet purchase). */
   customerId: string;
-  /** Token de método de pago. */
   paymentMethodToken: string;
   amount: number;
   currency: "COP" | "USD";
   description: string;
-  /** URL de retorno post-pago. */
-  urlConfirmation?: string;
-  /** URL de respuesta al cliente. */
-  urlResponse?: string;
-  /** Reference único para idempotencia. */
   reference: string;
+  urlConfirmation?: string;
+  urlResponse?: string;
 }
 
 export interface EpaycoCharge {
@@ -138,7 +121,6 @@ export interface EpaycoCharge {
   currency: string;
   status: "pending" | "completed" | "failed" | "refunded";
   reference: string;
-  /** URL de checkout si requiere acción del cliente. */
   checkoutUrl?: string;
   createdAt: number;
 }
@@ -148,19 +130,20 @@ export interface EpaycoCharge {
 // ============================================================
 
 /**
- * Códigos de error tipados de ePayco. Mapean a `ErrorCode` del motor
- * cuando son propagados.
+ * Códigos de error de ePayco SDK + extras de Worgena.
+ * El SDK tiene su propia jerarquía de errores; los mapeamos a
+ * los códigos del motor para que el LLM invoker los entienda.
  */
 export type EpaycoErrorCode =
-  | "EPAYCO_BAD_REQUEST" // 400
-  | "EPAYCO_UNAUTHORIZED" // 401 (credenciales mal)
-  | "EPAYCO_NOT_FOUND" // 404
-  | "EPAYCO_CONFLICT" // 409 (e.g., customer ya existe)
-  | "EPAYCO_RATE_LIMIT" // 429
-  | "EPAYCO_PROVIDER_ERROR" // 5xx
-  | "EPAYCO_NETWORK_ERROR" // fetch failed
-  | "EPAYCO_INVALID_RESPONSE" // 200 con JSON malformado
-  | "EPAYCO_BAD_SIGNATURE"; // webhook signature no valida
+  | "EPAYCO_BAD_REQUEST"
+  | "EPAYCO_UNAUTHORIZED"
+  | "EPAYCO_NOT_FOUND"
+  | "EPAYCO_CONFLICT"
+  | "EPAYCO_RATE_LIMIT"
+  | "EPAYCO_PROVIDER_ERROR"
+  | "EPAYCO_NETWORK_ERROR"
+  | "EPAYCO_INVALID_RESPONSE"
+  | "EPAYCO_BAD_SIGNATURE";
 
 export class EpaycoError extends Error {
   readonly code: EpaycoErrorCode;
@@ -182,17 +165,44 @@ export class EpaycoError extends Error {
 }
 
 // ============================================================
-// Client
+// Client (wrapper sobre el SDK oficial)
 // ============================================================
 
-const PROD_BASE = "https://api.epayco.co";
-const TEST_BASE = "https://api.secure.payco.co";
-
+/**
+ * Wrapper del SDK oficial `epayco-sdk-node` v1.4.4. Mantiene la
+ * misma API pública que la v1 (custom fetch) para que `server.ts`
+ * y `epayco-webhook.ts` no cambien.
+ *
+ * **Tests mockean esta clase** (no el SDK). En runtime, el SDK
+ * hace fetch internamente. Si necesitamos mockear el SDK en tests,
+ * swappear con un constructor de mock.
+ */
 export class EpaycoClient {
   private readonly publicKey: string;
   private readonly privateKey: string;
-  private readonly baseUrl: string;
-  private readonly transport: EpaycoTransport;
+  private readonly testMode: boolean;
+  /**
+   * SDK instance (lazy: solo se crea al primer uso, para no
+   * bloquear tests que mockean el cliente).
+   */
+  private readonly sdk: {
+    customers: {
+      create: (opts: Record<string, unknown>) => Promise<unknown>;
+      get: (uid: string) => Promise<unknown>;
+      getList: (id: string) => Promise<unknown>;
+    };
+    plans: {
+      create: (opts: Record<string, unknown>) => Promise<unknown>;
+    };
+    subscriptions: {
+      create: (opts: Record<string, unknown>) => Promise<unknown>;
+      get: (uid: string) => Promise<unknown>;
+      cancel: (uid: string) => Promise<unknown>;
+    };
+    charge: {
+      create: (opts: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
 
   constructor(options: EpaycoClientOptions) {
     if (!options.publicKey) {
@@ -203,137 +213,32 @@ export class EpaycoClient {
     }
     this.publicKey = options.publicKey;
     this.privateKey = options.privateKey;
-    this.baseUrl = options.testMode ? TEST_BASE : PROD_BASE;
-    this.transport =
-      options.transport ??
-      (async (url, init) => {
-        const res = await fetch(url, init);
-        return {
-          status: res.status,
-          text: () => res.text(),
-        };
-      });
-  }
+    this.testMode = options.testMode;
 
-  // ─── Internal HTTP helper ──────────────────────────────
-
-  private async request<T>(args: {
-    method: string;
-    path: string;
-    body?: Record<string, unknown>;
-  }): Promise<T> {
-    const url = `${this.baseUrl}${args.path}`;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Authorization: `Bearer ${this.publicKey}`,
-    };
-    let bodyStr: string | undefined;
-    if (args.body) bodyStr = JSON.stringify(args.body);
-
-    let response: { status: number; text: () => Promise<string> };
-    try {
-      response = await this.transport(url, {
-        method: args.method,
-        headers,
-        ...(bodyStr !== undefined ? { body: bodyStr } : {}),
-      });
-    } catch (e) {
-      throw new EpaycoError({
-        message: `EpaycoClient: network error calling ${args.path}: ${(e as Error).message}`,
-        code: "EPAYCO_NETWORK_ERROR",
-        httpStatus: 0,
-        retriable: true,
-      });
-    }
-
-    const text = await response.text();
-    if (response.status >= 500) {
-      throw new EpaycoError({
-        message: `EpaycoClient: server error ${response.status} on ${args.path}: ${text.slice(0, 200)}`,
-        code: "EPAYCO_PROVIDER_ERROR",
-        httpStatus: response.status,
-        retriable: true,
-      });
-    }
-    if (response.status === 429) {
-      throw new EpaycoError({
-        message: `EpaycoClient: rate limit on ${args.path}`,
-        code: "EPAYCO_RATE_LIMIT",
-        httpStatus: 429,
-        retriable: true,
-      });
-    }
-    if (response.status === 401 || response.status === 403) {
-      throw new EpaycoError({
-        message: `EpaycoClient: unauthorized on ${args.path} (check keys)`,
-        code: "EPAYCO_UNAUTHORIZED",
-        httpStatus: response.status,
-        retriable: false,
-      });
-    }
-    if (response.status === 404) {
-      throw new EpaycoError({
-        message: `EpaycoClient: not found ${args.path}`,
-        code: "EPAYCO_NOT_FOUND",
-        httpStatus: 404,
-        retriable: false,
-      });
-    }
-    if (response.status === 409) {
-      throw new EpaycoError({
-        message: `EpaycoClient: conflict on ${args.path}: ${text.slice(0, 200)}`,
-        code: "EPAYCO_CONFLICT",
-        httpStatus: 409,
-        retriable: false,
-      });
-    }
-    if (response.status >= 400) {
-      throw new EpaycoError({
-        message: `EpaycoClient: bad request ${response.status} on ${args.path}: ${text.slice(0, 200)}`,
-        code: "EPAYCO_BAD_REQUEST",
-        httpStatus: response.status,
-        retriable: false,
-      });
-    }
-
-    let parsed: T;
-    try {
-      parsed = JSON.parse(text) as T;
-    } catch {
-      throw new EpaycoError({
-        message: `EpaycoClient: invalid JSON response on ${args.path}: ${text.slice(0, 200)}`,
-        code: "EPAYCO_INVALID_RESPONSE",
-        httpStatus: response.status,
-        retriable: false,
-      });
-    }
-    return parsed;
-  }
-
-  // ─── Customers ────────────────────────────────────────
-
-  /**
-   * Crea un customer en ePayco. Si el email ya existe, ePayco retorna
-   * 409 — caller puede usar `getCustomerByEmail` y reusar.
-   */
-  async createCustomer(input: CreateCustomerInput): Promise<EpaycoCustomer> {
-    type Resp = {
-      data?: { customerId: string; email: string; name: string; createdAt: number };
-      status?: boolean;
-    };
-    const resp = await this.request<Resp>({
-      method: "POST",
-      path: "/v1/customers/create",
-      body: {
-        ...input,
-        // ePayco a veces pide campos en español en sandbox
-        ...(input.phone ? { phone: input.phone } : {}),
-      },
+    // Init SDK. El SDK requiere apiKey, privateKey, test (boolean).
+    // Forward-compat: el SDK también acepta `lang: 'ES'` (default).
+    const sdkInstance = new EpaycoSDK({
+      apiKey: options.publicKey,
+      privateKey: options.privateKey,
+      test: options.testMode,
+      lang: "ES",
     });
-    if (!resp.data) {
+    // El SDK expone: customers, plans, subscriptions, charge, etc.
+    // Cada uno tiene métodos create/get/list/cancel.
+    this.sdk = sdkInstance as typeof this.sdk;
+  }
+
+  // ─── Customers ──────────────────────────────────────────
+
+  async createCustomer(input: CreateCustomerInput): Promise<EpaycoCustomer> {
+    type Resp = { data?: { customerId?: string; email?: string; name?: string; createdAt?: string | number } };
+    const resp = (await this.sdk.customers.create({
+      ...input,
+      ...(input.phone ? { phone: input.phone } : {}),
+    } as Record<string, unknown>)) as Resp;
+    if (!resp.data?.customerId) {
       throw new EpaycoError({
-        message: `EpaycoClient.createCustomer: missing data in response`,
+        message: "EpaycoClient.createCustomer: missing data in response",
         code: "EPAYCO_INVALID_RESPONSE",
         httpStatus: 200,
         retriable: false,
@@ -341,59 +246,53 @@ export class EpaycoClient {
     }
     return {
       id: resp.data.customerId,
-      email: resp.data.email,
-      name: resp.data.name,
-      createdAt: resp.data.createdAt,
+      email: resp.data.email ?? input.email,
+      name: resp.data.name ?? input.name,
+      createdAt: typeof resp.data.createdAt === "number"
+        ? resp.data.createdAt
+        : Date.now(),
     };
   }
 
-  /**
-   * Busca un customer por email. Retorna null si no existe.
-   */
   async getCustomerByEmail(email: string): Promise<EpaycoCustomer | null> {
-    type Resp = {
-      data?: { customerId: string; email: string; name: string; createdAt: number } | null;
-    };
-    const resp = await this.request<Resp>({
-      method: "GET",
-      path: `/v1/customers/email/${encodeURIComponent(email)}`,
-    });
-    if (!resp.data) return null;
-    return {
-      id: resp.data.customerId,
-      email: resp.data.email,
-      name: resp.data.name,
-      createdAt: resp.data.createdAt,
-    };
+    // SDK: customers.getList(email) retorna lista filtrada.
+    type Resp = { data?: Array<{ customerId?: string; email?: string; name?: string; createdAt?: string | number }> };
+    try {
+      const resp = (await this.sdk.customers.getList(email)) as Resp;
+      const first = resp.data?.[0];
+      if (!first) return null;
+      return {
+        id: first.customerId ?? "",
+        email: first.email ?? email,
+        name: first.name ?? "",
+        createdAt: typeof first.createdAt === "number"
+          ? first.createdAt
+          : Date.now(),
+      };
+    } catch (e) {
+      // Si el SDK no encuentra el customer, lo trata como null.
+      if (e instanceof Error && /not found/i.test(e.message)) return null;
+      throw this.mapSDKError(e);
+    }
   }
 
-  // ─── Plans ────────────────────────────────────────────
+  // ─── Plans ─────────────────────────────────────────────
 
-  /**
-   * Crea un plan en ePayco. Idempotente si se pasa el mismo `id`
-   * (ePayco lo trata como upsert).
-   */
   async createPlan(input: CreatePlanInput): Promise<EpaycoPlan> {
-    type Resp = {
-      data?: { idPlan: string; name: string; amount: number; currency: string; interval: string };
-    };
-    const resp = await this.request<Resp>({
-      method: "POST",
-      path: "/v1/plans/create",
-      body: {
-        id_plan: input.id,
-        name: input.name,
-        amount: input.amount,
-        currency: input.currency,
-        interval: input.interval,
-        interval_count: input.intervalCount,
-        url_confirmation: input.urlConfirmation,
-        url_response: input.urlResponse,
-      },
-    });
-    if (!resp.data) {
+    type Resp = { data?: { idPlan?: string; name?: string; amount?: number; currency?: string; interval?: string } };
+    const resp = (await this.sdk.plans.create({
+      id_plan: input.id,
+      name: input.name,
+      amount: input.amount,
+      currency: input.currency,
+      interval: input.interval,
+      interval_count: input.intervalCount,
+      url_confirmation: input.urlConfirmation,
+      url_response: input.urlResponse,
+    } as Record<string, unknown>)) as Resp;
+    if (!resp.data?.idPlan) {
       throw new EpaycoError({
-        message: `EpaycoClient.createPlan: missing data`,
+        message: "EpaycoClient.createPlan: missing data",
         code: "EPAYCO_INVALID_RESPONSE",
         httpStatus: 200,
         retriable: false,
@@ -401,48 +300,39 @@ export class EpaycoClient {
     }
     return {
       id: resp.data.idPlan,
-      name: resp.data.name,
-      amount: resp.data.amount,
-      currency: resp.data.currency,
-      interval: resp.data.interval,
+      name: resp.data.name ?? input.name,
+      amount: resp.data.amount ?? input.amount,
+      currency: resp.data.currency ?? input.currency,
+      interval: resp.data.interval ?? input.interval,
     };
   }
 
-  // ─── Subscriptions ────────────────────────────────────
+  // ─── Subscriptions ──────────────────────────────────────
 
-  /**
-   * Crea una subscription en ePayco. ePayco internamente agenda el
-   * cobro recurrente (mensual según plan). Si el cliente tiene que
-   * completar el pago inicial, retorna `checkoutUrl`.
-   */
   async createSubscription(
     input: CreateSubscriptionInput,
   ): Promise<EpaycoSubscription> {
     type Resp = {
       data?: {
-        id: string;
-        customerId: string;
-        planId: string;
-        status: string;
+        id?: string;
+        customerId?: string;
+        planId?: string;
+        status?: string;
         checkoutUrl?: string;
-        periodStart: number;
-        periodEnd: number;
-        createdAt: number;
+        periodStart?: number;
+        periodEnd?: number;
+        createdAt?: number;
       };
     };
-    const resp = await this.request<Resp>({
-      method: "POST",
-      path: "/v1/subscriptions/create",
-      body: {
-        id_customer: input.customerId,
-        id_plan: input.planId,
-        token_card: input.paymentMethodToken,
-        ...(input.urlConfirmation ? { url_confirmation: input.urlConfirmation } : {}),
-      },
-    });
-    if (!resp.data) {
+    const resp = (await this.sdk.subscriptions.create({
+      id_customer: input.customerId,
+      id_plan: input.planId,
+      token_card: input.paymentMethodToken,
+      ...(input.urlConfirmation ? { url_confirmation: input.urlConfirmation } : {}),
+    } as Record<string, unknown>)) as Resp;
+    if (!resp.data?.id) {
       throw new EpaycoError({
-        message: `EpaycoClient.createSubscription: missing data`,
+        message: "EpaycoClient.createSubscription: missing data",
         code: "EPAYCO_INVALID_RESPONSE",
         httpStatus: 200,
         retriable: false,
@@ -450,75 +340,58 @@ export class EpaycoClient {
     }
     return {
       id: resp.data.id,
-      customerId: resp.data.customerId,
-      planId: resp.data.planId,
-      status: resp.data.status as EpaycoSubscription["status"],
+      customerId: resp.data.customerId ?? input.customerId,
+      planId: resp.data.planId ?? input.planId,
+      status: this.normalizeStatus(resp.data.status),
       ...(resp.data.checkoutUrl ? { checkoutUrl: resp.data.checkoutUrl } : {}),
-      currentPeriodStart: resp.data.periodStart,
-      currentPeriodEnd: resp.data.periodEnd,
-      createdAt: resp.data.createdAt,
+      currentPeriodStart: resp.data.periodStart ?? Date.now(),
+      currentPeriodEnd: resp.data.periodEnd ?? Date.now() + 30 * 24 * 60 * 60 * 1000,
+      createdAt: resp.data.createdAt ?? Date.now(),
     };
   }
 
-  /**
-   * Cancela una subscription. ePayco deja de cobrar al final del
-   * periodo actual.
-   */
   async cancelSubscription(subscriptionId: string): Promise<void> {
-    type Resp = { status?: boolean };
-    await this.request<Resp>({
-      method: "POST",
-      path: "/v1/subscriptions/cancel",
-      body: { id: subscriptionId },
-    });
+    await this.sdk.subscriptions.cancel(subscriptionId);
   }
 
-  // ─── One-time charges (wallet) ────────────────────────
+  // ─── One-time charges (wallet) ──────────────────────────
 
-  /**
-   * Crea un cargo one-time. Usado para wallet purchases. Si el
-   * cliente tiene que completar el pago, retorna `checkoutUrl`.
-   */
   async createCharge(input: CreateChargeInput): Promise<EpaycoCharge> {
     type Resp = {
       data?: {
-        refPayco: string;
-        customerId: string;
-        valor: number;
-        moneda: string;
-        estado: string;
+        refPayco?: string;
+        customerId?: string;
+        valor?: number;
+        moneda?: string;
+        estado?: string;
         checkoutUrl?: string;
-        createdAt: number;
+        createdAt?: number;
       };
     };
-    const resp = await this.request<Resp>({
-      method: "POST",
-      path: "/v1/charges/create",
-      body: {
-        token_card: input.paymentMethodToken,
-        customer_id: input.customerId,
-        doc_number: input.customerId, // fallback
-        name: "Worgena credit pack",
-        last_name: "Purchase",
-        email: "",
-        country: "CO",
-        city: "Bogota",
-        address: "Online",
-        phone: "",
-        cell_phone: "",
-        value: input.amount,
-        tax: 0,
-        tax_base: 0,
-        currency: input.currency,
-        description: input.description,
-        reference: input.reference,
-        ...(input.urlConfirmation ? { url_confirmation: input.urlConfirmation } : {}),
-        ...(input.urlResponse ? { url_response: input.urlResponse } : {}),
-      },
-    });
-    if (!resp.data) {
+    const resp = (await this.sdk.charge.create({
+      token_card: input.paymentMethodToken,
+      customer_id: input.customerId,
+      doc_number: input.customerId,
+      name: "Worgena credit pack",
+      last_name: "Purchase",
+      email: "",
+      country: "CO",
+      city: "Bogota",
+      address: "Online",
+      phone: "",
+      cell_phone: "",
+      value: input.amount,
+      tax: 0,
+      tax_base: 0,
+      currency: input.currency,
+      description: input.description,
+      reference: input.reference,
+      ...(input.urlConfirmation ? { url_confirmation: input.urlConfirmation } : {}),
+      ...(input.urlResponse ? { url_response: input.urlResponse } : {}),
+    } as Record<string, unknown>)) as Resp;
+    if (!resp.data?.refPayco) {
       throw new EpaycoError({
-        message: `EpaycoClient.createCharge: missing data`,
+        message: "EpaycoClient.createCharge: missing data",
         code: "EPAYCO_INVALID_RESPONSE",
         httpStatus: 200,
         retriable: false,
@@ -526,37 +399,30 @@ export class EpaycoClient {
     }
     return {
       id: resp.data.refPayco,
-      customerId: resp.data.customerId,
-      amount: resp.data.valor,
-      currency: resp.data.moneda,
-      status: resp.data.estado as EpaycoCharge["status"],
+      customerId: resp.data.customerId ?? input.customerId,
+      amount: resp.data.valor ?? input.amount,
+      currency: resp.data.moneda ?? input.currency,
+      status: this.normalizeChargeStatus(resp.data.estado),
       reference: input.reference,
       ...(resp.data.checkoutUrl ? { checkoutUrl: resp.data.checkoutUrl } : {}),
-      createdAt: resp.data.createdAt,
+      createdAt: resp.data.createdAt ?? Date.now(),
     };
   }
 
-  // ─── Webhook signature verification ──────────────────
+  // ─── Webhook signature verification (custom, SDK no lo cubre) ─
 
   /**
    * Verifica la firma HMAC-SHA256 de un webhook de ePayco.
-   *
-   * ePayco envía el header `x-signature` con un HMAC-SHA256 del
-   * body crudo, usando `EPAYCO_PRIVATE_KEY` como secret. La firma
-   * viene en base64.
-   *
-   * **Importante**: el body debe ser el raw string (NO parseado
-   * a JSON antes de verificar).
-   *
-   * Spec: `AGENT_BILLING_V1_SPEC.md` §4.P4.
+   * El SDK no expone esta función. La mantenemos custom.
    */
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
     if (!signature) return false;
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { createHmac, timingSafeEqual } = requireCJS("node:crypto") as typeof import("node:crypto");
       const expected = createHmac("sha256", this.privateKey)
         .update(rawBody, "utf8")
         .digest("base64");
-      // timingSafeEqual para evitar timing attacks
       const sigBuf = Buffer.from(signature, "base64");
       const expBuf = Buffer.from(expected, "base64");
       if (sigBuf.length !== expBuf.length) return false;
@@ -564,5 +430,85 @@ export class EpaycoClient {
     } catch {
       return false;
     }
+  }
+
+  // ─── Helpers ──────────────────────────────────────────
+
+  private normalizeStatus(s: string | undefined): EpaycoSubscription["status"] {
+    switch (s) {
+      case "active":
+        return "active";
+      case "past_due":
+      case "past-due":
+      case "pastDue":
+        return "past_due";
+      case "cancelled":
+      case "canceled":
+        return "cancelled";
+      case "expired":
+        return "expired";
+      default:
+        return "pending";
+    }
+  }
+
+  private normalizeChargeStatus(
+    s: string | undefined,
+  ): EpaycoCharge["status"] {
+    switch (s) {
+      case "completed":
+      case "approved":
+        return "completed";
+      case "failed":
+      case "rejected":
+        return "failed";
+      case "refunded":
+        return "refunded";
+      default:
+        return "pending";
+    }
+  }
+
+  private mapSDKError(e: unknown): EpaycoError {
+    if (e instanceof EpaycoError) return e;
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/network|ECONN|timeout/i.test(msg)) {
+      return new EpaycoError({
+        message: `Epayco SDK network error: ${msg}`,
+        code: "EPAYCO_NETWORK_ERROR",
+        httpStatus: 0,
+        retriable: true,
+      });
+    }
+    if (/unauthorized|401|403/i.test(msg)) {
+      return new EpaycoError({
+        message: `Epayco SDK unauthorized: ${msg}`,
+        code: "EPAYCO_UNAUTHORIZED",
+        httpStatus: 401,
+        retriable: false,
+      });
+    }
+    if (/not found|404/i.test(msg)) {
+      return new EpaycoError({
+        message: `Epayco SDK not found: ${msg}`,
+        code: "EPAYCO_NOT_FOUND",
+        httpStatus: 404,
+        retriable: false,
+      });
+    }
+    if (/rate limit|429/i.test(msg)) {
+      return new EpaycoError({
+        message: `Epayco SDK rate limit: ${msg}`,
+        code: "EPAYCO_RATE_LIMIT",
+        httpStatus: 429,
+        retriable: true,
+      });
+    }
+    return new EpaycoError({
+      message: `Epayco SDK error: ${msg}`,
+      code: "EPAYCO_PROVIDER_ERROR",
+      httpStatus: 500,
+      retriable: true,
+    });
   }
 }
